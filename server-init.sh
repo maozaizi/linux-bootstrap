@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # 统一调度入口；所有组件仍可直接通过 bash 单独运行。
-# Version: 1.0.4 | Updated: 2026-11-05
-# 用法（root）：bash server-init.sh；按提示提供公钥并完成初始化。
-# 保留 IPv6：bash server-init.sh --keep-ipv6；其他选项见 --help。
+# Version: 1.1.0 | Updated: 2026-11-05
+# 用法（root）：bash server-init.sh；从菜单选择一项执行，默认不修改系统。
+# 完整初始化：bash server-init.sh init；保留 IPv6 时追加 --keep-ipv6。
 # 按需安装 Docker：bash server-init.sh docker -u maozaizi。
 set -Eeuo pipefail
 export PATH="${PATH}:/usr/sbin:/sbin"
@@ -34,9 +34,12 @@ trap 'stop_on_failure "$?"' ERR
 usage() {
   cat <<'EOF'
 用法：
-  bash server-init.sh [init] [--keep-ipv6] [--defer-ssh-lockdown]
-      交互式初始化；公钥可通过提示、BOOTSTRAP_PUBKEY 或 BOOTSTRAP_PUBKEY_FILE 提供。
-      默认：基础环境与自动校时、低内存 Swap、BBR、关闭 IPv6、UFW、验证登录后关闭 SSH 密码。
+  bash server-init.sh [menu]
+      显示选择菜单；只执行选中的一项，完成后退出。回车或 0 退出，不做修改。
+
+  bash server-init.sh init [--keep-ipv6] [--defer-ssh-lockdown]
+      明确选择整套初始化；公钥可通过提示、BOOTSTRAP_PUBKEY 或 BOOTSTRAP_PUBKEY_FILE 提供。
+      执行：基础环境与自动校时、低内存 Swap、BBR、关闭 IPv6、UFW、验证登录后关闭 SSH 密码。
       --keep-ipv6           保留 IPv6（通过 IPv6 登录时必须使用）
       --defer-ssh-lockdown  暂不关闭 SSH 密码，稍后单独运行 audit
 
@@ -224,12 +227,56 @@ initialize() {
   [[ ! -e /var/run/reboot-required ]] || log '系统提示需要重启，请确认新用户登录成功后自行安排。'
 }
 
+interactive_menu() {
+  local choice operation
+  cat <<'EOF'
+
+请选择一项执行：
+  1) 基础环境：软件、校时、用户和 Zsh（保留 SSH 策略）
+  2) Swap：按需创建或检查
+  3) BBR：启用原生 BBR
+  4) IPv6：交互选择关闭或恢复
+  5) UFW：检查或初始化防火墙
+  6) Docker：独立安装
+  7) 安全审计：只读检查
+  8) SSH 收口：验证登录后关闭密码认证
+  9) 自动校时：单独启用或检查
+ 10) 整套初始化：执行完整流程（另需确认）
+  0) 退出
+EOF
+  read -r -p '输入编号 [0]：' choice || return 0
+  case "$choice" in
+    1)
+      collect_key
+      FORCE_RUN=1 HARDEN_SSH=0 SET_ROOT_SHELL_ZSH=1 run_component bootstrap-debian.sh
+      ;;
+    2) run_component setup-swap.sh ;;
+    3) run_component enable-bbr.sh ;;
+    4) run_component ipv6-manager.sh ;;
+    5)
+      read -r -p '输入 check 检查，或 init 初始化（重建规则）[check]：' operation || return 0
+      case "${operation:-check}" in
+        check|init) run_component ufw-manager.sh "${operation:-check}" ;;
+        *) die '仅支持 check 或 init；其他操作请使用 firewall 子命令，详见 --help。' ;;
+      esac
+      ;;
+    6) run_component install-docker.sh ;;
+    7) run_component server-security-audit.sh --audit-only ;;
+    8) BOOTSTRAP_USER="${BOOTSTRAP_USER:-maozaizi}" finish_security ;;
+    9) run_component bootstrap-debian.sh --time-sync-only ;;
+    10) initialize ;;
+    0|'') return 0 ;;
+    *) die '无效编号，请重新运行并输入 0 到 10。' ;;
+  esac
+}
+
 main() {
-  local action="${1:-init}" script
+  local action="${1:-menu}" script
   (($# == 0)) || shift
   case "$action" in
     -h|--help|help) usage ;;
-    --version|version) printf 'server-init.sh 1.0.4\n' ;;
+    --version|version) printf 'server-init.sh 1.1.0\n' ;;
+    menu) [[ $# == 0 ]] || die 'menu 不接受额外参数。'; interactive_menu ;;
     init) initialize "$@" ;;
     --keep-ipv6|--defer-ssh-lockdown) initialize "$action" "$@" ;;
     bootstrap) script=bootstrap-debian.sh ;;

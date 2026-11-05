@@ -68,6 +68,63 @@ setup_firewall() {{ echo firewall >> {shlex.quote(str(self.calls))}; }}
                 self.run_shell('main ' + action + ' --comment "two words"')
                 self.assertEqual(self.calls.read_text(), script + ' [--comment] [two words]\n')
 
+    def test_default_menu_never_initializes_on_exit_or_eof(self):
+        for stdin in ('0\n', '\n', ''):
+            with self.subTest(stdin=stdin):
+                r = self.run_shell('main', stdin=stdin)
+                self.assertIn('请选择一项执行', r.stdout)
+                self.assertFalse(self.calls.exists())
+
+    def test_menu_runs_only_selected_component(self):
+        mapping = {'2': 'setup-swap []', '3': 'enable-bbr []',
+                   '4': 'ipv6-manager []', '6': 'install-docker []',
+                   '7': 'server-security-audit [--audit-only]',
+                   '9': 'bootstrap-debian [--time-sync-only]'}
+        for choice, expected in mapping.items():
+            with self.subTest(choice=choice):
+                self.calls.write_text('')
+                self.run_shell('main menu', stdin=choice + '\n')
+                self.assertEqual(self.calls.read_text().strip(), expected)
+
+    def test_menu_basic_environment_collects_key_and_preserves_ssh(self):
+        self.run_shell('collect_key() { export BOOTSTRAP_PUBKEY="test key"; }; main',
+                       stdin='1\n')
+        self.assertEqual(self.calls.read_text(), 'bootstrap-debian []\n')
+        self.assertEqual(self.envfile.read_text(), '1|0|1\n')
+
+    def test_menu_firewall_defaults_to_check_and_init_keeps_confirmation(self):
+        for operation, expected in (('', 'check'), ('init', 'init')):
+            with self.subTest(operation=operation):
+                self.calls.write_text('')
+                self.run_shell('main', stdin='5\n' + operation + '\n')
+                self.assertEqual(self.calls.read_text(), f'ufw-manager [{expected}]\n')
+
+    def test_menu_ssh_lockdown_requires_verified_login(self):
+        for answer, expected in (('', ['server-security-audit [--audit-only]']),
+                                 ('verified', ['server-security-audit [--audit-only]',
+                                               'server-security-audit [--yes]'])):
+            with self.subTest(answer=answer):
+                self.calls.write_text('')
+                self.run_shell('main', stdin='8\n' + answer + '\n')
+                self.assertEqual(self.calls.read_text().splitlines(), expected)
+
+    def test_full_workflow_is_explicit_menu_choice(self):
+        self.run_shell(self.workflow() + 'main', stdin='10\nverified\n')
+        self.assertIn('bootstrap-debian [--check]', self.calls.read_text())
+        self.assertIn('firewall', self.calls.read_text())
+
+    def test_invalid_menu_choice_or_firewall_action_never_runs_component(self):
+        for stdin in ('99\n', '5\nreset\n'):
+            with self.subTest(stdin=stdin):
+                self.run_shell('main', stdin=stdin, success=False)
+                self.assertFalse(self.calls.exists())
+
+    def test_menu_component_failure_is_propagated(self):
+        r = self.run_shell('export FAIL_COMPONENT=enable-bbr; main',
+                           stdin='3\n', success=False)
+        self.assertEqual(r.returncode, 17)
+        self.assertEqual(self.calls.read_text(), 'enable-bbr []\n')
+
     def test_complete_workflow_and_environment(self):
         result = self.run_shell(self.workflow() + 'main init', stdin='verified\n')
         self.assertIn('[已完成] SSH 仅允许公钥认证', result.stdout)

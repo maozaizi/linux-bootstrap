@@ -1,6 +1,6 @@
 # Linux 服务器初始化
 
-新 VPS 以 root 执行，先下载，再初始化：
+新 VPS 以 root 执行，先下载，再从菜单选择操作：
 
 ```bash
 git clone https://github.com/maozaizi/linux-bootstrap.git /root/linux-bootstrap
@@ -10,14 +10,26 @@ bash server-init.sh
 
 若没有 Git，先执行 `apt update && apt install -y git ca-certificates`。下载公开仓库无需登录 GitHub。
 
-按提示提供公钥并确认开始；需要设置运维用户密码时，Bootstrap 会要求输入两次。
-也可以直接指定服务器上的公钥文件：
+不带参数只显示菜单，选择一项后执行并退出；回车或输入 `0` 退出，不会自动执行整套初始化。
+菜单提供基础环境、Swap、BBR、IPv6、防火墙、Docker、只读审计、SSH 收口和单独校时。
+基础环境会配置 root 和运维用户的 Zsh，保留原 SSH 策略；防火墙默认检查，选择 `init` 才进入重建确认。
+
+需要完整流程时，明确执行：
 
 ```bash
-BOOTSTRAP_PUBKEY_FILE=/root/id_ed25519.pub bash server-init.sh
+bash server-init.sh init
 ```
 
-默认运维用户 `maozaizi`，时区 `Asia/Shanghai`。初始化依次执行：
+基础环境或完整初始化会要求提供公钥，需要设置运维用户密码时会要求输入两次。
+也可以通过环境变量提供公钥；例如执行完整流程：
+
+```bash
+BOOTSTRAP_PUBKEY_FILE=/root/id_ed25519.pub bash server-init.sh init
+# 也支持直接提供完整单行公钥
+BOOTSTRAP_PUBKEY="ssh-ed25519 完整公钥内容" bash server-init.sh init
+```
+
+默认运维用户 `maozaizi`，时区 `Asia/Shanghai`。完整初始化依次执行：
 
 1. 只读预检：校验公钥、软件清单和初始化参数。
 2. 内存低于 768MB 且没有活动 Swap 时，先创建默认 1G Swap。
