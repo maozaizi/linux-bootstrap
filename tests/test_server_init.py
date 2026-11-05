@@ -107,13 +107,30 @@ setup_firewall() {{ echo firewall >> {shlex.quote(str(self.calls))}; }}
         self.assertEqual(self.calls.read_text(), 'ufw-manager [check]\n')
 
     def test_fresh_firewall_is_initialized(self):
-        self.run_shell('ufw() { if [[ "$1" == status ]]; then echo "Status: inactive"; fi; }; setup_firewall')
+        self.run_shell('''
+ufw() {
+  if [[ "$1" == status ]]; then
+    echo 'Status: inactive'
+  else
+    printf "%s\\n" "Added user rules (see 'ufw status' for running firewall):" '(None)'
+  fi
+}
+setup_firewall
+''')
         self.assertEqual(self.calls.read_text(), 'ufw-manager [init] [--yes]\n')
 
     def test_inactive_existing_rules_require_operator(self):
         self.run_shell('ufw() { if [[ "$1" == status ]]; then echo "Status: inactive"; '
-                       'else echo "ufw allow 8080/tcp"; fi; }; setup_firewall', success=False)
+                       'else printf "%s\\n" "Added user rules (see \'ufw status\' for running firewall):" '
+                       '"ufw allow 8080/tcp"; fi; }; setup_firewall', success=False)
         self.assertEqual(self.calls.read_text(), 'ufw-manager [check]\n')
+
+    def test_firewall_read_failure_stops_before_initialization(self):
+        for failing in ('status', 'show'):
+            with self.subTest(failing=failing):
+                self.run_shell('ufw() { [[ "$1" != ' + failing + ' ]]; }; setup_firewall',
+                               success=False)
+                self.assertFalse(self.calls.exists())
 
 
 if __name__ == '__main__':

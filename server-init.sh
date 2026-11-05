@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 统一调度入口；所有组件仍可直接通过 bash 单独运行。
-# Version: 1.0.2 | Updated: 2026-11-05
+# Version: 1.0.3 | Updated: 2026-11-05
 # 用法（root）：bash server-init.sh；按提示提供公钥并完成初始化。
 # 保留 IPv6：bash server-init.sh --keep-ipv6；其他选项见 --help。
 # 按需安装 Docker：bash server-init.sh docker -u maozaizi。
@@ -130,7 +130,8 @@ setup_firewall() {
   local status rules
   status="$(LC_ALL=C ufw status)"
   rules="$(LC_ALL=C ufw show added)"
-  if [[ "$status" == *'Status: active'* ]] || [[ "$rules" == *'ufw '* ]]; then
+  # 实际规则以 ufw 开头；说明文字中的 ufw status 不算规则。
+  if [[ "$status" == *'Status: active'* ]] || grep -q '^ufw ' <<< "$rules"; then
     log '检测到已有防火墙配置，保留规则并检查；不会自动 reset 或扩大放行范围。'
     run_component ufw-manager.sh check
     [[ "$status" == *'Status: active'* ]] || die '已有 UFW 规则尚未启用，请检查规则并手动启用后重跑初始化。'
@@ -208,7 +209,7 @@ main() {
   (($# == 0)) || shift
   case "$action" in
     -h|--help|help) usage ;;
-    --version|version) printf 'server-init.sh 1.0.2\n' ;;
+    --version|version) printf 'server-init.sh 1.0.3\n' ;;
     init) initialize "$@" ;;
     --keep-ipv6|--defer-ssh-lockdown) initialize "$action" "$@" ;;
     bootstrap) script=bootstrap-debian.sh ;;
