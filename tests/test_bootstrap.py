@@ -50,6 +50,12 @@ DONE_FILE="$STATE_DIR/done"
 SOFT_LIST_FILE={shlex.quote(str(SCRIPT.parent / 'soft-list'))}
 SSH_SOCKET_DROPIN_FILE={shlex.quote(str(self.socket))}
 SSH_SOCKET_DROPIN_DIR={shlex.quote(str(self.socket.parent))}
+sudo() {{
+  [[ "$1" == -H && "$2" == -u && "$3" == "$BOOTSTRAP_USER" && "$4" == -- ]] || return 99
+  printf '%s\\n' "$3" >> {shlex.quote(str(self.root / 'user-writes.log'))}
+  shift 4
+  "$@"
+}}
 get_sshd_bin() {{ printf '%s' {shlex.quote(str(self.wrapper))}; }}
 id() {{ if [[ "$1" == -nG ]]; then echo sudo; else echo 1000; fi; }}
 systemctl() {{
@@ -124,6 +130,60 @@ step_create_user
 ''')
         self.assertEqual(auth.read_text().splitlines(), [self.key('ecdsa'), self.key()])
 
+    def test_key_path_symlinks_do_not_modify_target(self):
+        for target in ('home', 'ssh', 'authorized_keys'):
+            with self.subTest(target=target):
+                case = self.root / ('key-link-' + target)
+                case.mkdir()
+                victim = case / 'victim'
+                victim.mkdir()
+                protected = victim / 'protected'
+                protected.write_text('unchanged\n')
+                protected.chmod(0o644)
+                home = case / 'home'
+                if target == 'home':
+                    home.symlink_to(victim, target_is_directory=True)
+                else:
+                    home.mkdir()
+                    if target == 'ssh':
+                        (home / '.ssh').symlink_to(victim, target_is_directory=True)
+                    else:
+                        (home / '.ssh').mkdir()
+                        (home / '.ssh/authorized_keys').symlink_to(protected)
+                self.run_shell(f'''
+VALIDATED_PUBKEY={shlex.quote(self.key())}
+getent() {{ printf 'maozaizi:x:1000:1000::{home}:/bin/bash\\n'; }}
+ensure_sudo_installed() {{ :; }}; ensure_sudo_group() {{ :; }}
+step_create_user
+''', success=False)
+                self.assertEqual(protected.read_text(), 'unchanged\n')
+                self.assertEqual(protected.stat().st_mode & 0o777, 0o644)
+                self.assertEqual(list(victim.iterdir()), [protected])
+
+    def test_shell_symlinks_do_not_modify_target(self):
+        for name in ('.shell_aliases', '.bashrc', '.zshrc'):
+            with self.subTest(name=name):
+                home = self.root / ('shell-link-' + name)
+                home.mkdir()
+                victim = home / 'protected'
+                victim.write_text('unchanged\n')
+                (home / name).symlink_to(victim)
+                self.run_shell(f'''
+getent() {{ printf 'maozaizi:x:1000:1000::{home}:/bin/bash\\n'; }}
+step_shell_alias
+''', success=False)
+                self.assertEqual(victim.read_text(), 'unchanged\n')
+
+    def test_authorized_keys_non_regular_file_is_rejected(self):
+        home = self.root / 'key-directory'
+        (home / '.ssh/authorized_keys').mkdir(parents=True)
+        self.run_shell(f'''
+VALIDATED_PUBKEY={shlex.quote(self.key())}
+getent() {{ printf 'maozaizi:x:1000:1000::{home}:/bin/bash\\n'; }}
+ensure_sudo_installed() {{ :; }}; ensure_sudo_group() {{ :; }}
+step_create_user
+''', success=False)
+
     def test_reload_failure_is_propagated(self):
         self.run_shell('FAIL_RELOAD=1; FAIL_RESTART=1; '
                        'reload_ssh_service || die "reload failed"', success=False)
@@ -132,7 +192,6 @@ step_create_user
     def test_existing_user_with_different_primary_group(self):
         home = self.root / 'existing-user'
         home.mkdir()
-        ownership = self.root / 'ownership.log'
         self.run_shell(f'''
 BOOTSTRAP_USER=ops
 VALIDATED_PUBKEY={shlex.quote(self.key())}
@@ -140,19 +199,11 @@ id() {{ case "$1" in -gn) echo users ;; -nG) echo sudo ;; *) echo 1000 ;; esac; 
 getent() {{ printf 'ops:x:1000:100::{home}:/bin/bash\\n'; }}
 ensure_sudo_installed() {{ :; }}; ensure_sudo_group() {{ :; }}
 useradd() {{ echo UNEXPECTED_USERADD >&2; return 1; }}
-install() {{
-  [[ "$*" == *'-g users '* ]] || return 1
-  mkdir -p "${{@: -1}}"
-}}
-chown() {{
-  [[ "$1" == ops:users ]] || return 1
-  printf '%s\\n' "$*" >> {shlex.quote(str(ownership))}
-}}
 step_create_user
 step_shell_alias
 ''')
         self.assertEqual((home / '.ssh/authorized_keys').read_text().strip(), self.key())
-        self.assertEqual(len(ownership.read_text().splitlines()), 4)
+        self.assertEqual((self.root / 'user-writes.log').read_text().splitlines(), ['ops', 'ops'])
         for name in ('.shell_aliases', '.bashrc', '.zshrc'):
             self.assertTrue((home / name).is_file())
 

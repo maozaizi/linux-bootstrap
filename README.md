@@ -114,6 +114,8 @@ bash server-init.sh docker -u maozaizi
 | Docker | `bash install-docker.sh -u maozaizi` | `bash server-init.sh docker -u maozaizi` |
 
 所有组件参数原样转交，各脚本不依赖入口。直接运行组件时仍需遵守自身的公钥、权限与确认要求。
+Bootstrap 以目标用户身份写入公钥及用户 Shell 配置，拒绝这些路径上的已有符号链接或异常文件类型。
+已有文件须可由目标用户写入；拒绝操作时先检查属主和路径，不会自动接管其他文件。
 SSH 收口只限制认证方式，不重写原有 root 登录限制；原先禁止 root 登录时仍保持禁止。
 升级旧版收口文件时，也保留其中的 root 策略及来源限制。
 IPv6 状态按实际接口显示，可能为混合状态；交互模式可明确选择关闭或开启。

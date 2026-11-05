@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bootstrap-debian.sh — Debian / Ubuntu 新服务器初始化
-# Version: 1.7.0 | Updated: 2026-11-05
+# Version: 1.7.1 | Updated: 2026-11-05
 # 支持 Ubuntu 22.04 / 24.04、Debian 12 / 13，需 root 和 systemd。
 # 仅安装软件：bash bootstrap-debian.sh --packages-only（清单为同目录 soft-list）。
 # 只读预检：使用同一公钥设置，追加 --check。
@@ -11,9 +11,10 @@
 # 默认创建 maozaizi（zsh + sudo），禁用普通用户 SSH 密码认证，保留 root 密码兜底。
 # SSH 策略使用 10-bootstrap.conf（早于常见的 50-cloud-init.conf），自动迁移旧 99 文件。
 # FORCE_RUN=1 绕过总完成标记；用户、公钥、软件包和 SSH 会重新检查。
+# 用户公钥及 Shell 文件降权写入；拒绝已有符号链接。
 # 完成后请在新终端验证登录，再关闭当前会话。其余配置见下方环境变量。
 
-VERSION="1.7.0"
+VERSION="1.7.1"
 LAST_MODIFIED="2026-11-05"
 SUPPORTED_DISTROS="ubuntu-22.04 ubuntu-24.04 debian-12 debian-13"
 set -Eeuo pipefail
@@ -411,29 +412,34 @@ step_create_user() {
   home_dir="$(getent passwd "$BOOTSTRAP_USER" | cut -d: -f6)"
   [[ -n "$home_dir" ]] || die "Cannot resolve home directory for user: $BOOTSTRAP_USER"
 
-  local ssh_dir="${home_dir}/.ssh"
-  local auth_file="${ssh_dir}/authorized_keys"
   local pubkey
   pubkey="$VALIDATED_PUBKEY"
   [[ -n "$pubkey" ]] || die "No prevalidated public key available."
 
-  # 已有用户的主组可能与用户名不同。
-  local primary_group
-  primary_group="$(id -gn "$BOOTSTRAP_USER")"
-  install -d -m 700 -o "$BOOTSTRAP_USER" -g "$primary_group" "$ssh_dir"
-  touch "$auth_file"
-  chown "$BOOTSTRAP_USER:$primary_group" "$auth_file"
-  chmod 600 "$auth_file"
-
-  if grep -Fqx "$pubkey" "$auth_file"; then
-    log "Public key already present in authorized_keys"
-  else
-    if [[ -s "$auth_file" && -n "$(tail -c1 "$auth_file")" ]]; then
-      printf '\n' >> "$auth_file"
-    fi
-    printf "%s\n" "$pubkey" >> "$auth_file"
-    log "Public key appended to authorized_keys"
-  fi
+  # 用户目录中的读写降权执行，避免链接或并发替换变成 root 文件写入。
+  sudo -H -u "$BOOTSTRAP_USER" -- /bin/bash -s -- "$home_dir" "$pubkey" <<'USER_KEY'
+set -Eeuo pipefail
+home=$1
+pubkey=$2
+ssh_dir="$home/.ssh"
+auth_file="$ssh_dir/authorized_keys"
+[[ -d "$home" && ! -L "$home" && ! -L "$ssh_dir" && ! -L "$auth_file" ]] || {
+  echo 'Refusing symlink or invalid home/SSH key path.' >&2; exit 1;
+}
+[[ ! -e "$auth_file" || -f "$auth_file" ]] || {
+  echo 'authorized_keys must be a regular file.' >&2; exit 1;
+}
+umask 077
+mkdir -p -- "$ssh_dir"
+chmod 700 "$ssh_dir"
+touch -- "$auth_file"
+chmod 600 "$auth_file"
+if ! grep -Fqx -- "$pubkey" "$auth_file"; then
+  if [[ -s "$auth_file" && -n "$(tail -c1 -- "$auth_file")" ]]; then printf '\n' >> "$auth_file"; fi
+  printf '%s\n' "$pubkey" >> "$auth_file"
+fi
+USER_KEY
+  log "User public key and permissions checked"
 
   mark_done "$step"
   log "User bootstrap done"
@@ -472,56 +478,33 @@ step_shell_alias() {
   local step="shell_alias"
   step_done "$step" && { log "Skip: shell alias already configured"; return; }
 
-  local user="$BOOTSTRAP_USER"
-  local primary_group
-  primary_group="$(id -gn "$user")"
   local home
-  home="$(getent passwd "$user" | cut -d: -f6)"
+  home="$(getent passwd "$BOOTSTRAP_USER" | cut -d: -f6)"
+  [[ -n "$home" ]] || die "Cannot determine home dir for $BOOTSTRAP_USER"
 
-  [[ -n "$home" ]] || die "Cannot determine home dir for $user"
-
-  local alias_file="${home}/.shell_aliases"
-  local alias_line="alias ll='ls -alF --color=auto'"
-
-  # 创建 alias 文件（幂等）
-  if [[ ! -f "$alias_file" ]]; then
-    touch "$alias_file"
-    chown "$user:$primary_group" "$alias_file"
-    chmod 644 "$alias_file"
-    log "Created $alias_file"
-  fi
-
-  # 写 alias（防重复）
-  if grep -Fxq "$alias_line" "$alias_file"; then
-    log "Alias ll already exists"
-  else
-    echo "$alias_line" >> "$alias_file"
-    log "Alias ll added"
-  fi
-
-  # bash 加载（若不存在则创建）
-  local bashrc="${home}/.bashrc"
-  if [[ ! -f "$bashrc" ]]; then
-    touch "$bashrc"
-    chown "$user:$primary_group" "$bashrc"
-    chmod 644 "$bashrc"
-  fi
-  if ! grep -Fq ".shell_aliases" "$bashrc"; then
-    echo '[ -f ~/.shell_aliases ] && . ~/.shell_aliases' >> "$bashrc"
-    log "Linked alias into .bashrc"
-  fi
-
-  # zsh 加载（若不存在则创建）
-  local zshrc="${home}/.zshrc"
-  if [[ ! -f "$zshrc" ]]; then
-    touch "$zshrc"
-    chown "$user:$primary_group" "$zshrc"
-    chmod 644 "$zshrc"
-  fi
-  if ! grep -Fq ".shell_aliases" "$zshrc"; then
-    echo '[ -f ~/.shell_aliases ] && source ~/.shell_aliases' >> "$zshrc"
-    log "Linked alias into .zshrc"
-  fi
+  # Shell 配置同样以用户身份写入；不跟随已有符号链接。
+  sudo -H -u "$BOOTSTRAP_USER" -- /bin/bash -s -- "$home" <<'USER_SHELL'
+set -Eeuo pipefail
+home=$1
+[[ -d "$home" && ! -L "$home" ]] || exit 1
+for file in "$home/.shell_aliases" "$home/.bashrc" "$home/.zshrc"; do
+  [[ ! -L "$file" && ( ! -e "$file" || -f "$file" ) ]] || {
+    echo 'Refusing symlink or non-regular shell configuration.' >&2; exit 1;
+  }
+done
+umask 022
+touch -- "$home/.shell_aliases" "$home/.bashrc" "$home/.zshrc"
+alias_line="alias ll='ls -alF --color=auto'"
+if ! grep -Fxq -- "$alias_line" "$home/.shell_aliases"; then
+  printf '%s\n' "$alias_line" >> "$home/.shell_aliases"
+fi
+if ! grep -Fq '.shell_aliases' "$home/.bashrc"; then
+  printf '%s\n' '[ -f ~/.shell_aliases ] && . ~/.shell_aliases' >> "$home/.bashrc"
+fi
+if ! grep -Fq '.shell_aliases' "$home/.zshrc"; then
+  printf '%s\n' '[ -f ~/.shell_aliases ] && source ~/.shell_aliases' >> "$home/.zshrc"
+fi
+USER_SHELL
 
   mark_done "$step"
 }

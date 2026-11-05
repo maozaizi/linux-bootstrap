@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ufw-manager.sh — 独立管理主机防火墙，保留 SSH 锁死保护。
-# Version: 1.5.1 | Updated: 2026-11-05
+# Version: 1.5.2 | Updated: 2026-11-05
 # 用法（root）：bash ufw-manager.sh check；更多命令见 --help。
-# 新机初始化：bash ufw-manager.sh init（确认后重建，默认放行 SSH 和 443/tcp）。
+# 新机初始化：bash ufw-manager.sh init --yes（重建，默认放行 SSH 和 443/tcp）。
 # init --yes 重建规则，失败恢复原配置及启用状态；完整备份保存在 /var/backups/ufw-manager。
 # restrict 先增加来源规则再移除公网放行；读取、删除失败或仍有公网覆盖时停止。
 # Docker 发布端口不应仅依赖 UFW 保护；check 会提示相关情况。
@@ -13,7 +13,7 @@ set -Eeuo pipefail
 export LC_ALL=C
 export PATH="${PATH}:/usr/sbin:/sbin"
 
-readonly SCRIPT_VERSION="1.5.1"
+readonly SCRIPT_VERSION="1.5.2"
 readonly DEFAULT_TCP_PORT="443"
 readonly DEFAULT_PROTOCOL="tcp"
 readonly DEFAULT_SSH_PORT="22"
@@ -83,7 +83,7 @@ usage() {
   sudo ./ufw-manager.sh add-from <source_ip_or_cidr> <port> [tcp|udp] [--comment TEXT]
       添加来源限制规则
       示例：
-        sudo ./ufw-manager.sh add-from 96.44.175.11 2222
+        sudo ./ufw-manager.sh add-from 192.0.2.10 2222
         sudo ./ufw-manager.sh add-from 10.0.0.0/24 51820 udp
 
   sudo ./ufw-manager.sh restrict <source_ip_or_cidr> <port> [tcp|udp] [--comment TEXT] [--yes]
@@ -92,7 +92,7 @@ usage() {
       - 目标为 SSH 端口时会校验当前 SSH 来源 IP，不在范围内需 --yes 强制
       - 完成后列出仍覆盖该端口的公网规则
       示例：
-        sudo ./ufw-manager.sh restrict 96.44.175.11 2222
+        sudo ./ufw-manager.sh restrict 192.0.2.10 2222
         sudo ./ufw-manager.sh restrict 10.0.0.0/24 51820 udp
 
   sudo ./ufw-manager.sh del <port> [tcp|udp] [--yes]
@@ -104,7 +104,7 @@ usage() {
   sudo ./ufw-manager.sh del-from <source_ip_or_cidr> <port> [tcp|udp] [--yes]
       删除来源限制规则（SSH 端口需 --yes）
       示例：
-        sudo ./ufw-manager.sh del-from 96.44.175.11 2222 --yes
+        sudo ./ufw-manager.sh del-from 192.0.2.10 2222 --yes
         sudo ./ufw-manager.sh del-from 10.0.0.0/24 51820 udp
 
   sudo ./ufw-manager.sh version
