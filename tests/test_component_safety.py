@@ -195,6 +195,38 @@ after="$(effective_sshd_config root 198.51.100.5)"
 config_is_key_only "$after" root
 ''')
 
+    def test_old_managed_root_policy_survives_migration_and_repeat(self):
+        for policy in ('no', 'forced-commands-only', 'prohibit-password'):
+            with self.subTest(policy=policy):
+                self.target.write_text('PermitRootLogin ' + policy + '\n'
+                                       'Match User root\n PermitRootLogin ' + policy + '\n')
+                self.run_shell('''
+before="$(effective_sshd_config root 127.0.0.1)"
+before_root="$(sshd_value "$before" permitrootlogin)"
+enforce_key_only_ssh
+enforce_key_only_ssh
+after="$(effective_sshd_config root 127.0.0.1)"
+[[ "$(sshd_value "$after" permitrootlogin)" == "$before_root" ]]
+config_is_key_only "$after" root
+''')
+
+    def test_old_managed_source_specific_root_policy_survives_migration(self):
+        self.target.write_text('Match User root Address 198.51.100.0/24\n'
+                               ' PermitRootLogin no\n'
+                               'Match User root Address 2001:db8:1::/48\n'
+                               ' PermitRootLogin forced-commands-only\n')
+        self.run_shell('''
+enforce_key_only_ssh
+for item in '198.51.100.5 no' '2001:db8:1::5 forced-commands-only'; do
+  read -r addr expected <<< "$item"
+  config="$(effective_sshd_config root "$addr")"
+  [[ "$(sshd_value "$config" permitrootlogin)" == "$expected" ]]
+  config_is_key_only "$config" root
+done
+config="$(effective_sshd_config root 127.0.0.1)"
+[[ "$(sshd_value "$config" permitrootlogin)" != no ]]
+''')
+
     def test_denied_root_key_alone_cannot_pass_lockout_guard(self):
         (self.dropins / '50-root-policy.conf').write_text('PermitRootLogin no\n')
         r = self.run_shell('LOGIN_USERS=(root); user_key_status() { echo yes; }; '

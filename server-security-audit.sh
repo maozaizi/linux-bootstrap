@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # server-security-audit.sh — SSH 公钥认证收口与主机暴露面检查。
-# Version: 1.2.4 | Updated: 2026-11-05
+# Version: 1.2.5 | Updated: 2026-11-05
 # 只读检查（root）：bash server-security-audit.sh --audit-only。
 # SSH 收口（root）：bash server-security-audit.sh；其他选项见 --help。
 # 默认修改 SSH；--audit-only 只检查。请先在新终端验证公钥登录和 sudo。
-# 保留原有 root 登录限制；仅收紧认证方式。
+# 保留原有 root 登录限制（含旧版收口文件）；仅收紧认证方式。
 # 00-key-only-auth.conf 优先于 Bootstrap；验证或应用失败会恢复原配置。
 # 公钥预检不能替代真实登录测试（不完整评估账户限制和 AllowGroups 等规则）。
 
 set -Eeuo pipefail
 
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_VERSION="1.2.4"
+readonly SCRIPT_VERSION="1.2.5"
 readonly SSH_DROPIN_DIR="/etc/ssh/sshd_config.d"
 readonly SSH_DROPIN_FILE="${SSH_DROPIN_DIR}/00-key-only-auth.conf"
 # 覆盖 IPv4 / IPv6 测试来源；验证时另加入当前 SSH 来源。
@@ -503,6 +503,20 @@ KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
 PermitEmptyPasswords no
 AuthenticationMethods publickey
+EOF
+  # 迁移旧版文件时，保留其中的 root 策略及其 Match 作用域。
+  if [[ -f "$workdir/original" ]]; then
+    awk '
+      { line=$0; sub(/^[ \t]+/, "", line); split(line, fields, /[ \t=]+/); key=tolower(fields[1]) }
+      key == "match" { context=$0 }
+      key == "permitrootlogin" {
+        if (context != "") { print context; matched=1 }
+        print
+      }
+      END { if (matched) print "Match all" }
+    ' "$workdir/original" >> "$CANDIDATE_FILE"
+  fi
+  cat >> "$CANDIDATE_FILE" <<'EOF'
 
 # A later bootstrap drop-in may contain a root-only password exception.
 # sshd uses the first value it obtains and this file is read first (00-*),
