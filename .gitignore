@@ -1,0 +1,18 @@
+# 本机文件与测试产物
+.DS_Store
+__pycache__/
+*.py[cod]
+*.swp
+*.log
+*.bak
+
+# 凭据与本地部署资料
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pub
+id_rsa*
+id_ed25519*
+local/
