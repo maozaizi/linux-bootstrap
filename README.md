@@ -21,7 +21,7 @@ BOOTSTRAP_PUBKEY_FILE=/root/id_ed25519.pub bash server-init.sh
 
 1. 只读预检：校验公钥、软件清单和初始化参数。
 2. 内存低于 768MB 且没有活动 Swap 时，先创建默认 1G Swap。
-3. Bootstrap：系统更新、工具、运维用户、公钥、sudo、Zsh 与历史记录，保留原 SSH 策略。
+3. Bootstrap：系统更新、工具、时区与自动校时、运维用户、公钥、sudo、Zsh 与历史记录，保留原 SSH 策略。
 4. 启用原生 BBR；不替换内核。
 5. 关闭 IPv6；通过 IPv6 登录时拒绝此操作。
 6. 全新 UFW 放行 SSH 与 `443/tcp`；已有规则保留。已配置但未启用时停止，交由操作者处理。
@@ -34,7 +34,7 @@ BOOTSTRAP_PUBKEY_FILE=/root/id_ed25519.pub bash server-init.sh
 ## 软件包清单
 
 基础软件包统一维护在同目录的 `soft-list`：每行一个包名，支持空行、`#` 注释和行尾注释。
-Bootstrap 只将清单中的包名交给 apt，依赖由 apt 自行处理，不额外补包或替换包名。
+基础工具按清单交给 apt，依赖和虚拟包由 apt 自行处理；自动校时服务另按下节按需补齐。
 清单缺失、为空或包名格式错误时，在系统变更前停止。清单作为数据读取，不执行其中内容。
 清单拒绝 `sudo-` 等卸载操作符，安装命令使用 `--no-remove` 阻止删除软件包；包是否可用由 apt 校验。
 
@@ -52,6 +52,26 @@ SOFT_LIST_FILE=/root/custom-soft-list bash bootstrap-debian.sh --packages-only
 新增条目在下次应用时安装；删除条目不会自动卸载已有软件。
 已有安装完成标记不会跳过这项操作。apt 仍可能更新清单中已安装的软件包。
 单独运行 Bootstrap 时，请同时保留 `soft-list`，或通过 `SOFT_LIST_FILE` 指定文件。
+
+Debian 13 中，`dnsutils` 由 `bind9-dnsutils` 提供，`libncursesw5-dev` 由 `libncurses-dev` 提供。
+这是发行版的包提供关系，清单保留原名称；对应软件已安装时，不应仅按旧包名判断为漏装。
+
+## 自动校时与 Shell 生效
+
+初始化优先保留已运行的常见校时服务；有可用服务时直接启用，无可用服务时才安装 `systemd-timesyncd`。
+按需安装使用 `--no-remove`，不会为校时移除已有软件，也不覆盖现有时间源配置。
+服务启动和首次同步是两件事；尚未同步时会明确提示待检查，不会无限等待或误报同步完成。
+原有步骤标记不跳过校时检查；只安装软件清单不会启用校时。
+
+已经初始化过的服务器可更新代码后，以 root 单独执行，无需公钥或重跑其他步骤：
+
+```bash
+bash bootstrap-debian.sh --time-sync-only
+timedatectl status
+```
+
+Zsh 默认登录 Shell 与配置在重新登录后生效。需要当前终端立即切换时，手动执行 `exec zsh -l`。
+脚本不会替换调用它的外层终端。
 
 ## 可选设置
 
@@ -93,6 +113,7 @@ UFW 重建前备份配置和原启用状态，失败时尝试恢复；完整备�
 
 修复问题后再次执行入口。Bootstrap 保留已有步骤标记，但重新检查用户与公钥；
 已有 Swap 和防火墙规则不会自动替换。若暂缓 SSH 收口，程序会明确提示，该步骤仍需日后完成。
+最终结果分别列出 SSH 收口和时间同步状态；“基础初始化完成”不代表所有待办都已完成。
 
 支持 Ubuntu 22.04/24.04、Debian 12/13，要求 root、Bash 4+、systemd 和交互终端。
 关闭密码认证前的真实登录验证不能用本机静态检查代替。

@@ -31,7 +31,8 @@ if [[ {shlex.quote(name)} == bootstrap-debian ]]; then
 fi
 if [[ "${{FAIL_COMPONENT:-}}" == {shlex.quote(name)} ]]; then exit 17; fi
 ''')
-        self.base = '\nSCRIPT_DIR=' + shlex.quote(str(self.folder)) + '\n'
+        self.base = ('\nSCRIPT_DIR=' + shlex.quote(str(self.folder)) + '\n' +
+                     'timedatectl() { echo "${TEST_SYNCED:-yes}"; }\n')
 
     def run_shell(self, code, *, stdin='', success=True):
         result = subprocess.run(['bash', '-c', self.source + self.base + code],
@@ -68,7 +69,9 @@ setup_firewall() {{ echo firewall >> {shlex.quote(str(self.calls))}; }}
                 self.assertEqual(self.calls.read_text(), script + ' [--comment] [two words]\n')
 
     def test_complete_workflow_and_environment(self):
-        self.run_shell(self.workflow() + 'main init', stdin='verified\n')
+        result = self.run_shell(self.workflow() + 'main init', stdin='verified\n')
+        self.assertIn('[已完成] SSH 仅允许公钥认证', result.stdout)
+        self.assertNotIn('[待办] SSH', result.stdout)
         self.assertEqual(self.calls.read_text().splitlines(), [
             'bootstrap-debian [--check]', 'swap', 'bootstrap-debian []',
             'enable-bbr []', 'ipv6-manager [disable]',
@@ -77,7 +80,8 @@ setup_firewall() {{ echo firewall >> {shlex.quote(str(self.calls))}; }}
         self.assertNotIn('install-docker', self.calls.read_text())
 
     def test_preserve_ipv6_and_defer_security(self):
-        self.run_shell(self.workflow() + 'main init --keep-ipv6 --defer-ssh-lockdown')
+        result = self.run_shell(self.workflow() + 'main init --keep-ipv6 --defer-ssh-lockdown')
+        self.assertIn('[待办] SSH 密码收口未执行', result.stdout)
         calls = self.calls.read_text()
         self.assertNotIn('ipv6-manager', calls)
         self.assertNotIn('[--yes]', calls)
@@ -87,6 +91,13 @@ setup_firewall() {{ echo firewall >> {shlex.quote(str(self.calls))}; }}
         result = self.run_shell(self.workflow() + 'main init', stdin='\n')
         self.assertNotIn('[--yes]', self.calls.read_text())
         self.assertIn('收口尚未完成', result.stdout)
+        self.assertIn('[待办] SSH 密码收口未执行', result.stdout)
+
+    def test_completion_summary_reports_pending_time_and_shell_hint(self):
+        result = self.run_shell('TEST_SYNCED=no; finish_summary')
+        self.assertIn('[待办] 时间同步尚未确认', result.stdout)
+        self.assertIn('exec zsh -l', result.stdout)
+        self.assertNotIn('[已完成] 系统时间已同步', result.stdout)
 
     def test_failure_stops_later_components(self):
         result = self.run_shell(self.workflow() +

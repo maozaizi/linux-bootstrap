@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 统一调度入口；所有组件仍可直接通过 bash 单独运行。
-# Version: 1.0.3 | Updated: 2026-11-05
+# Version: 1.0.4 | Updated: 2026-11-05
 # 用法（root）：bash server-init.sh；按提示提供公钥并完成初始化。
 # 保留 IPv6：bash server-init.sh --keep-ipv6；其他选项见 --help。
 # 按需安装 Docker：bash server-init.sh docker -u maozaizi。
@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd)"
 CURRENT_STEP="预检"
 KEEP_IPV6=0
 DEFER_SSH=0
+SSH_LOCKDOWN_DONE=0
 
 log() {
   printf '[INFO] %s\n' "$*"
@@ -35,7 +36,7 @@ usage() {
 用法：
   bash server-init.sh [init] [--keep-ipv6] [--defer-ssh-lockdown]
       交互式初始化；公钥可通过提示、BOOTSTRAP_PUBKEY 或 BOOTSTRAP_PUBKEY_FILE 提供。
-      默认：基础环境、低内存 Swap、BBR、关闭 IPv6、UFW、验证登录后关闭 SSH 密码。
+      默认：基础环境与自动校时、低内存 Swap、BBR、关闭 IPv6、UFW、验证登录后关闭 SSH 密码。
       --keep-ipv6           保留 IPv6（通过 IPv6 登录时必须使用）
       --defer-ssh-lockdown  暂不关闭 SSH 密码，稍后单独运行 audit
 
@@ -154,6 +155,7 @@ setup_swap() {
 
 finish_security() {
   local answer
+  SSH_LOCKDOWN_DONE=0
   run_component server-security-audit.sh --audit-only
   if (( DEFER_SSH == 1 )); then
     log 'SSH 密码策略保持原状；验证登录后可单独执行 bash server-init.sh audit。'
@@ -163,10 +165,28 @@ finish_security() {
   read -r -p '两项均成功后，输入 verified 关闭所有 SSH 密码认证；回车暂缓：' answer
   if [[ "$answer" == verified ]]; then
     run_component server-security-audit.sh --yes
+    SSH_LOCKDOWN_DONE=1
     log 'SSH 公钥认证收口完成。'
   else
     log 'SSH 收口尚未完成，密码策略保持原状；验证后单独执行 bash server-init.sh audit。'
   fi
+}
+
+finish_summary() {
+  local synced
+  log '基础初始化完成。Docker 和 Node 按需另行部署；未自动重启。'
+  if (( SSH_LOCKDOWN_DONE == 1 )); then
+    log '[已完成] SSH 仅允许公钥认证。'
+  else
+    log '[待办] SSH 密码收口未执行；请先验证新用户公钥登录和 sudo -v，再执行 bash server-init.sh audit。'
+  fi
+  synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+  if [[ "$synced" == yes ]]; then
+    log '[已完成] 系统时间已同步。'
+  else
+    log '[待办] 时间同步尚未确认，请执行 timedatectl status 检查。'
+  fi
+  log 'Shell 配置在重新登录后生效；当前终端可手动执行 exec zsh -l。'
 }
 
 initialize() {
@@ -200,7 +220,7 @@ initialize() {
   if (( KEEP_IPV6 == 0 )); then run_component ipv6-manager.sh disable; fi
   setup_firewall
   finish_security
-  log '基础初始化完成。Docker 和 Node 按需另行部署；未自动重启。'
+  finish_summary
   [[ ! -e /var/run/reboot-required ]] || log '系统提示需要重启，请确认新用户登录成功后自行安排。'
 }
 
@@ -209,7 +229,7 @@ main() {
   (($# == 0)) || shift
   case "$action" in
     -h|--help|help) usage ;;
-    --version|version) printf 'server-init.sh 1.0.3\n' ;;
+    --version|version) printf 'server-init.sh 1.0.4\n' ;;
     init) initialize "$@" ;;
     --keep-ipv6|--defer-ssh-lockdown) initialize "$action" "$@" ;;
     bootstrap) script=bootstrap-debian.sh ;;

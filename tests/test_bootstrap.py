@@ -232,7 +232,7 @@ step_harden_ssh
         setup = '''
 require_root() { :; }; check_supported_os() { :; }
 password_step_needed() { return 1; }
-for name in step_apt_upgrade step_apt_cleanup step_timezone step_ensure_sudo \\
+for name in step_apt_upgrade step_apt_cleanup step_timezone step_time_sync step_ensure_sudo \\
             step_install_pkgs step_create_user step_set_password step_shell_alias \\
             step_configure_system_shell step_root_shell_zsh; do
   eval "$name() { :; }"

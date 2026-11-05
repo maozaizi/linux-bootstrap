@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # bootstrap-debian.sh — Debian / Ubuntu 新服务器初始化
-# Version: 1.6.2 | Updated: 2026-11-05
+# Version: 1.7.0 | Updated: 2026-11-05
 # 支持 Ubuntu 22.04 / 24.04、Debian 12 / 13，需 root 和 systemd。
 # 仅安装软件：bash bootstrap-debian.sh --packages-only（清单为同目录 soft-list）。
 # 只读预检：使用同一公钥设置，追加 --check。
+# 仅启用自动校时：bash bootstrap-debian.sh --time-sync-only（无需公钥）。
 #
 # 用法：BOOTSTRAP_PUBKEY_FILE=/root/id_ed25519.pub bash bootstrap-debian.sh
 # 也可通过 BOOTSTRAP_PUBKEY 传入单行公钥；需要密码时会在系统变更前交互确认。
@@ -12,7 +13,7 @@
 # FORCE_RUN=1 绕过总完成标记；用户、公钥、软件包和 SSH 会重新检查。
 # 完成后请在新终端验证登录，再关闭当前会话。其余配置见下方环境变量。
 
-VERSION="1.6.2"
+VERSION="1.7.0"
 LAST_MODIFIED="2026-11-05"
 SUPPORTED_DISTROS="ubuntu-22.04 ubuntu-24.04 debian-12 debian-13"
 set -Eeuo pipefail
@@ -294,6 +295,46 @@ step_timezone() {
   else
     warn "timedatectl not found; skip timezone"
     mark_done "$step"
+  fi
+}
+
+step_time_sync() {
+  local unit active="" available synced
+  command -v timedatectl >/dev/null 2>&1 || die "自动校时需要 timedatectl 和正在运行的 systemd。"
+
+  # 沿用已运行的常见校时服务，避免切换到另一套服务。
+  for unit in chrony.service chronyd.service ntp.service ntpsec.service systemd-timesyncd.service; do
+    if systemctl is-active --quiet "$unit"; then active="$unit"; break; fi
+  done
+  if [[ -n "$active" ]]; then
+    systemctl enable "$active" || die "无法设置校时服务开机启动：$active"
+    log "沿用校时服务：$active"
+  else
+    available="$(timedatectl show -p CanNTP --value)" || die "无法检查校时服务。"
+    case "$available" in
+      yes)
+        timedatectl set-ntp true || die "启用自动校时失败。"
+        [[ "$(timedatectl show -p NTP --value)" == yes ]] || die "自动校时未启用，请检查服务。"
+        ;;
+      no)
+        info "未发现可用校时服务，安装 systemd-timesyncd。"
+        export DEBIAN_FRONTEND=noninteractive
+        apt update
+        apt install --no-remove -y systemd-timesyncd
+        systemctl daemon-reload
+        # 直接启动新安装的服务，不依赖 timedated 已缓存的服务列表。
+        systemctl enable --now systemd-timesyncd.service || die "启用 systemd-timesyncd 失败。"
+        systemctl is-active --quiet systemd-timesyncd.service || die "systemd-timesyncd 未运行。"
+        ;;
+      *) die "无法识别校时服务状态：$available" ;;
+    esac
+    log "自动校时已启用并设置开机启动。"
+  fi
+  synced="$(timedatectl show -p NTPSynchronized --value)" || die "无法读取时间同步状态。"
+  if [[ "$synced" == yes ]]; then
+    log "系统时间已同步。"
+  else
+    warn "[待办] 自动校时服务已启用，但尚未确认同步；稍后执行 timedatectl status 检查网络和时间源。"
   fi
 }
 
@@ -737,7 +778,7 @@ step_harden_ssh() (
 main() {
   case "${1:-}" in
     -h|--help)
-      printf 'Usage: bash bootstrap-debian.sh [--check|--packages-only]\nPackage list: %s\n' "$SOFT_LIST_FILE"
+      printf 'Usage: bash bootstrap-debian.sh [--check|--packages-only|--time-sync-only]\nPackage list: %s\n' "$SOFT_LIST_FILE"
       return 0
       ;;
     --check)
@@ -758,6 +799,13 @@ main() {
       step_install_pkgs
       return 0
       ;;
+    --time-sync-only)
+      [[ $# == 1 ]] || die "--time-sync-only takes no arguments."
+      require_root
+      check_supported_os
+      step_time_sync
+      return 0
+      ;;
     '') ;;
     *) die "Unknown option: $1" ;;
   esac
@@ -776,41 +824,45 @@ main() {
 
   ensure_state_dir
 
-  info "Step 1/11: apt update & upgrade"
+  info "Step 1/12: apt update & upgrade"
   step_apt_upgrade
 
-  info "Step 2/11: apt cleanup"
+  info "Step 2/12: apt cleanup"
   step_apt_cleanup
 
-  info "Step 3/11: set timezone ($BOOTSTRAP_TZ)"
+  info "Step 3/12: set timezone ($BOOTSTRAP_TZ)"
   step_timezone
 
-  info "Step 4/11: install packages from $SOFT_LIST_FILE"
+  info "Step 4/12: install packages from $SOFT_LIST_FILE"
   step_install_pkgs
 
-  info "Step 5/11: ensure sudo is available"
+  info "Step 5/12: enable automatic time synchronization"
+  step_time_sync
+
+  info "Step 6/12: ensure sudo is available"
   step_ensure_sudo
 
-  info "Step 6/11: create user, grant sudo, install SSH public key"
+  info "Step 7/12: create user, grant sudo, install SSH public key"
   step_create_user
 
-  info "Step 7/11: apply prevalidated password for user"
+  info "Step 8/12: apply prevalidated password for user"
   step_set_password
 
-  info "Step 8/11: configure shell aliases"
+  info "Step 9/12: configure shell aliases"
   step_shell_alias
 
-  info "Step 9/11: configure system-wide shell experience (zsh prompt/colors/completion + aliases)"
+  info "Step 10/12: configure system-wide shell experience (zsh prompt/colors/completion + aliases)"
   step_configure_system_shell
 
-  info "Step 10/11: optional change root login shell to zsh (SET_ROOT_SHELL_ZSH=$SET_ROOT_SHELL_ZSH)"
+  info "Step 11/12: optional change root login shell to zsh (SET_ROOT_SHELL_ZSH=$SET_ROOT_SHELL_ZSH)"
   step_root_shell_zsh
 
-  info "Step 11/11: harden sshd (HARDEN_SSH=$HARDEN_SSH)"
+  info "Step 12/12: harden sshd (HARDEN_SSH=$HARDEN_SSH)"
   step_harden_ssh
 
   final_mark_done
   log "All steps finished. Test SSH in a NEW terminal/session before closing the current root session."
+  log "Shell 配置在重新登录后生效；当前终端可手动执行 exec zsh -l。"
 }
 
 main "$@"
