@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install-docker.sh — 独立安装 Docker Engine、Buildx 和 Compose。
-# Version: 1.5.2 | Updated: 2026-11-05
+# Version: 1.5.3 | Updated: 2026-11-05
 # 用法：bash install-docker.sh [-u USER] [-S] [-L]
 # -u：加入 docker 组；-S：跳过 hello-world；-L：仅在 daemon.json 不存在时配置日志轮转。
 # 日志参数：DOCKER_LOG_MAX_SIZE=10m，DOCKER_LOG_MAX_FILE=3；必须为正数，不覆盖已有配置。
@@ -74,14 +74,20 @@ add_to_docker_group() {
   fi
 }
 
-configure_log_rotation() {
-  # 仅在 daemon.json 不存在时写入；已存在则跳过，绝不覆盖用户配置。
-  local f="/etc/docker/daemon.json"
+validate_log_rotation() {
   local max_size="${DOCKER_LOG_MAX_SIZE:-10m}"
   local max_file="${DOCKER_LOG_MAX_FILE:-3}"
 
   [[ "$max_size" =~ ^[0-9]*[1-9][0-9]*[kKmMgG]?$ ]] || die "DOCKER_LOG_MAX_SIZE 必须为正数（示例：10m）：${max_size}"
   [[ "$max_file" =~ ^[0-9]*[1-9][0-9]*$ ]] || die "DOCKER_LOG_MAX_FILE 必须为正整数：${max_file}"
+}
+
+configure_log_rotation() {
+  # 仅在 daemon.json 不存在时写入，不覆盖已有配置。
+  local f="/etc/docker/daemon.json"
+  local max_size="${DOCKER_LOG_MAX_SIZE:-10m}"
+  local max_file="${DOCKER_LOG_MAX_FILE:-3}"
+  validate_log_rotation
 
   if [[ -f "$f" ]]; then
     warn "已存在 ${f}，跳过日志轮转配置（不会覆盖）。"
@@ -121,6 +127,9 @@ while getopts ":u:SL" opt; do
     *) die "用法: $0 [-u USER] [-S] [-L]" ;;
   esac
 done
+
+# 参数错误在提权、包管理和配置修改之前停止。
+if [[ "$ENABLE_LOG_ROTATION" == 1 ]]; then validate_log_rotation; fi
 
 # 提权
 if [[ $EUID -ne 0 ]]; then

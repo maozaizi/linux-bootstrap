@@ -1,6 +1,7 @@
 """Check service-manager selection without installing Docker."""
 from pathlib import Path
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -15,7 +16,7 @@ class DockerLoggingTests(unittest.TestCase):
         self.directory = Path(self.tmp.name) / 'docker'
         self.config = self.directory / 'daemon.json'
         source = (ROOT / 'install-docker.sh').read_text()
-        start = source.index('configure_log_rotation() {')
+        start = source.index('validate_log_rotation() {')
         end = source.index('# 连接正在运行的 systemd', start)
         self.source = ('set -euo pipefail\ninfo() { :; }; warn() { :; }; '
                        'die() { echo "$*" >&2; exit 1; };\n' +
@@ -51,6 +52,37 @@ class DockerLoggingTests(unittest.TestCase):
         r = self.run_logging('10m', '3')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.config.read_text(), original)
+
+    def test_invalid_cli_limits_stop_before_privilege_or_package_operations(self):
+        # Read the real startup through validation, ending before privilege handling.
+        source = (ROOT / 'install-docker.sh').read_text().split('# 提权', 1)[0]
+        for size, count in (('0m', '3'), ('10m', '0')):
+            with self.subTest(size=size, count=count):
+                r = subprocess.run(['bash', '-c', source + '\necho VALIDATION_BYPASSED',
+                                    'install-docker.sh', '-L'],
+                                   env={**os.environ, 'DOCKER_LOG_MAX_SIZE': size,
+                                        'DOCKER_LOG_MAX_FILE': count},
+                                   capture_output=True, text=True)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn('必须为正', r.stderr)
+                self.assertNotIn('VALIDATION_BYPASSED', r.stdout)
+
+    def test_invalid_options_never_reach_uninstall_of_existing_docker(self):
+        source = (ROOT / 'install-docker.sh').read_text()
+        functions = source[:source.index('ADD_USER=""')]
+        # The real option parsing and real conflict-removal block run with apt mocked.
+        options = source[source.index('ADD_USER=""'):source.index('# 提权')]
+        conflicts = source[source.index('CONFLICT_PKGS=('):source.index('# Keyring')]
+        code = functions + '''
+apt-get() { echo UNEXPECTED_APT; }
+dpkg-query() { echo ii; }
+''' + options + conflicts
+        r = subprocess.run(['bash', '-c', code, 'install-docker.sh', '-L'],
+                           env={**os.environ, 'DOCKER_LOG_MAX_SIZE': '0m'},
+                           text=True, capture_output=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('必须为正', r.stderr)
+        self.assertNotIn('UNEXPECTED_APT', r.stdout)
 
 
 class DockerServiceTests(unittest.TestCase):

@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # server-security-audit.sh — SSH 公钥认证收口与主机暴露面检查。
-# Version: 1.2.3 | Updated: 2026-11-05
+# Version: 1.2.4 | Updated: 2026-11-05
 # 只读检查（root）：bash server-security-audit.sh --audit-only。
 # SSH 收口（root）：bash server-security-audit.sh；其他选项见 --help。
 # 默认修改 SSH；--audit-only 只检查。请先在新终端验证公钥登录和 sudo。
+# 保留原有 root 登录限制；仅收紧认证方式。
 # 00-key-only-auth.conf 优先于 Bootstrap；验证或应用失败会恢复原配置。
 # 公钥预检不能替代真实登录测试（不完整评估账户限制和 AllowGroups 等规则）。
 
 set -Eeuo pipefail
 
 readonly SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_VERSION="1.2.3"
+readonly SCRIPT_VERSION="1.2.4"
 readonly SSH_DROPIN_DIR="/etc/ssh/sshd_config.d"
 readonly SSH_DROPIN_FILE="${SSH_DROPIN_DIR}/00-key-only-auth.conf"
 # 覆盖 IPv4 / IPv6 测试来源；验证时另加入当前 SSH 来源。
@@ -182,22 +183,18 @@ list_login_users() {
 
 config_is_key_only() {
   local config="$1"
-  local user="$2"
-  local password_auth="" keyboard_auth="" pubkey_auth="" auth_methods="" root_login=""
+  local password_auth="" keyboard_auth="" pubkey_auth="" auth_methods=""
 
   password_auth="$(sshd_value "$config" passwordauthentication)"
   keyboard_auth="$(sshd_value "$config" kbdinteractiveauthentication)"
   pubkey_auth="$(sshd_value "$config" pubkeyauthentication)"
   auth_methods="$(sshd_value "$config" authenticationmethods)"
-  root_login="$(sshd_value "$config" permitrootlogin)"
 
   [[ "$password_auth" == "no" ]] || return 1
   [[ "$keyboard_auth" == "no" ]] || return 1
   [[ "$pubkey_auth" == "yes" ]] || return 1
   [[ "$auth_methods" == "publickey" ]] || return 1
-  if [[ "$user" == "root" && "$root_login" == "yes" ]]; then
-    return 1
-  fi
+  # AuthenticationMethods 已限制为 publickey，无需放宽或重写 PermitRootLogin。
   return 0
 }
 
@@ -366,6 +363,10 @@ audit_key_readiness() {
       printf '%-20s %-8s %s\n' "$user" "$label" "被 AllowUsers 排除，无法通过 SSH 登录"
       continue
     fi
+    if [[ "$user" == root && "$(sshd_value "$config" permitrootlogin)" == no ]]; then
+      printf '%-20s %-8s %s\n' "$user" "$label" "root SSH 登录已禁止，不计入就绪账户"
+      continue
+    fi
 
     note=""
     case "$status" in
@@ -493,7 +494,7 @@ enforce_key_only_ssh() (
 
   cat > "$CANDIDATE_FILE" <<'EOF'
 # Managed by server-security-audit.sh
-# SSH accepts public-key authentication only. Root remains available by key.
+# SSH accepts public-key authentication only; existing root restrictions remain.
 # ChallengeResponseAuthentication is a deprecated alias of KbdInteractiveAuthentication;
 # it is kept here for older sshd versions.
 PubkeyAuthentication yes
@@ -502,7 +503,6 @@ KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
 PermitEmptyPasswords no
 AuthenticationMethods publickey
-PermitRootLogin prohibit-password
 
 # A later bootstrap drop-in may contain a root-only password exception.
 # sshd uses the first value it obtains and this file is read first (00-*),
@@ -513,7 +513,6 @@ Match User root
   KbdInteractiveAuthentication no
   PermitEmptyPasswords no
   AuthenticationMethods publickey
-  PermitRootLogin prohibit-password
 
 # 所有账户在首个适用的 Match 中明确收口，避免后续来源例外放宽认证。
 Match all

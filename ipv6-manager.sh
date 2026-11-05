@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # ipv6-manager.sh — 独立管理 IPv6；不重载其他 sysctl 参数，不修改 GRUB。
-# Version: 1.1.1 | Updated: 2026-11-05
+# Version: 1.2.0 | Updated: 2026-11-05
 # 用法（root）：bash ipv6-manager.sh status；无参数进入交互模式。
 # 关闭：bash ipv6-manager.sh disable；恢复：bash ipv6-manager.sh enable。
 # 排查其他配置：bash ipv6-manager.sh check；更多说明见 help。
+# 状态按实际接口判断；交互模式可明确选择关闭或开启。
 # 配置保存在 /etc/sysctl.d/99-ipv6-manager.conf，变更失败恢复原配置和运行值。
 
 set -Eeuo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
-VERSION="1.1.1"
+VERSION="1.2.0"
 
 SYSCTL_FILE="/etc/sysctl.d/99-ipv6-manager.conf"
 BACKUP_DIR="/etc/sysctl.d/ipv6-manager-backup"
@@ -50,21 +51,26 @@ ipv6_kernel_available() {
     [[ -d /proc/sys/net/ipv6 ]]
 }
 
-ipv6_runtime_enabled() {
-    if ! ipv6_kernel_available; then
-        return 1
+ipv6_runtime_state() {
+    local path iface value enabled=0 disabled=0
+    # all 是批量写入开关，default 控制新接口，均不能代表现有接口状态。
+    for path in /proc/sys/net/ipv6/conf/*/disable_ipv6; do
+        [[ -f "$path" ]] || continue
+        iface="${path%/disable_ipv6}"
+        iface="${iface##*/}"
+        [[ "$iface" != all && "$iface" != default ]] || continue
+        value="$(cat "$path")" || { echo unknown; return; }
+        case "$value" in
+            0) enabled=$((enabled + 1)) ;;
+            1) disabled=$((disabled + 1)) ;;
+            *) echo unknown; return ;;
+        esac
+    done
+    if (( enabled > 0 && disabled > 0 )); then echo mixed
+    elif (( enabled > 0 )); then echo enabled
+    elif (( disabled > 0 )); then echo disabled
+    else echo unknown
     fi
-
-    if [[ ! -f /proc/sys/net/ipv6/conf/all/disable_ipv6 ]]; then
-        return 1
-    fi
-
-    local value
-    value="$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)"
-
-    # 0 = IPv6 enabled
-    # 1 = IPv6 disabled
-    [[ "$value" == "0" ]]
 }
 
 ###############################################################################
@@ -85,21 +91,21 @@ show_status() {
         return
     fi
 
-    if ipv6_runtime_enabled; then
-        echo "运行时 IPv6 状态：已开启"
-    else
-        echo "运行时 IPv6 状态：已关闭"
-    fi
+    case "$(ipv6_runtime_state)" in
+        enabled) echo "运行时 IPv6 状态：现有接口均已开启" ;;
+        disabled) echo "运行时 IPv6 状态：现有接口均已关闭" ;;
+        mixed) echo "运行时 IPv6 状态：混合（部分接口开启，部分关闭）" ;;
+        *) echo "运行时 IPv6 状态：无法确定" ;;
+    esac
 
     echo
     echo "关键 sysctl 状态："
 
-    for key in \
-        net.ipv6.conf.all.disable_ipv6 \
-        net.ipv6.conf.default.disable_ipv6 \
-        net.ipv6.conf.lo.disable_ipv6
-    do
-        sysctl "$key" 2>/dev/null || true
+    local path iface
+    for path in /proc/sys/net/ipv6/conf/*/disable_ipv6; do
+        [[ -f "$path" ]] || continue
+        iface="${path%/disable_ipv6}"
+        printf '%s.disable_ipv6 = %s\n' "${iface##*/}" "$(cat "$path")"
     done
 
     echo
@@ -285,23 +291,14 @@ interactive_menu() {
         error "当前系统无法通过 sysctl 管理 IPv6。"
     fi
 
-    if ipv6_runtime_enabled; then
-        echo "检测到 IPv6 当前处于开启状态。"
-        echo
-        if confirm "是否要永久关闭 IPv6？"; then
-            disable_ipv6
-        else
-            log "未执行关闭操作。"
-        fi
-    else
-        echo "检测到 IPv6 当前处于关闭状态。"
-        echo
-        if confirm "是否要恢复开启 IPv6？"; then
-            enable_ipv6
-        else
-            log "未执行恢复操作。"
-        fi
-    fi
+    local action
+    read -r -p '选择操作：1 关闭，2 开启，0 退出 [0]：' action || return 0
+    case "$action" in
+        1) if confirm '是否要永久关闭 IPv6？'; then disable_ipv6; fi ;;
+        2) if confirm '是否要恢复开启 IPv6？'; then enable_ipv6; fi ;;
+        0|'') log '未执行修改。' ;;
+        *) error '无效编号，请输入 0、1 或 2。' ;;
+    esac
 }
 
 ###############################################################################

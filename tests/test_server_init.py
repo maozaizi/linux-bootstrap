@@ -30,6 +30,9 @@ if [[ {shlex.quote(name)} == bootstrap-debian ]]; then
   printf '%s|%s|%s\\n' "${{FORCE_RUN:-}}" "${{HARDEN_SSH:-}}" "${{SET_ROOT_SHELL_ZSH:-}}" > {shlex.quote(str(self.envfile))}
 fi
 if [[ "${{FAIL_COMPONENT:-}}" == {shlex.quote(name)} ]]; then exit 17; fi
+if [[ {shlex.quote(name)} == ufw-manager && "${{1:-}}" == init ]]; then
+  [[ " $* " == *' --yes '* ]] || exit 23
+fi
 ''')
         self.base = ('\nSCRIPT_DIR=' + shlex.quote(str(self.folder)) + '\n' +
                      'timedatectl() { echo "${TEST_SYNCED:-yes}"; }\n')
@@ -93,11 +96,18 @@ setup_firewall() {{ echo firewall >> {shlex.quote(str(self.calls))}; }}
         self.assertEqual(self.envfile.read_text(), '1|0|1\n')
 
     def test_menu_firewall_defaults_to_check_and_init_keeps_confirmation(self):
-        for operation, expected in (('', 'check'), ('init', 'init')):
-            with self.subTest(operation=operation):
+        for stdin, expected in (('5\n\n', 'ufw-manager [check]\n'),
+                                ('5\ninit\ny\n', 'ufw-manager [init] [--yes]\n')):
+            with self.subTest(stdin=stdin):
                 self.calls.write_text('')
-                self.run_shell('main', stdin='5\n' + operation + '\n')
-                self.assertEqual(self.calls.read_text(), f'ufw-manager [{expected}]\n')
+                self.run_shell('main', stdin=stdin)
+                self.assertEqual(self.calls.read_text(), expected)
+
+    def test_menu_firewall_decline_or_eof_never_calls_component(self):
+        for stdin in ('5\ninit\nn\n', '5\ninit\n', '5\ninit\n\n'):
+            with self.subTest(stdin=stdin):
+                self.run_shell('main', stdin=stdin)
+                self.assertFalse(self.calls.exists())
 
     def test_menu_ssh_lockdown_requires_verified_login(self):
         for answer, expected in (('', ['server-security-audit [--audit-only]']),

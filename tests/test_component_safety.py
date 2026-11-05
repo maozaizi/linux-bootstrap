@@ -32,8 +32,9 @@ class IPv6Tests(unittest.TestCase):
         self.source += '\nSYSCTL_FILE=' + shlex.quote(str(self.config))
         self.source += '\nBACKUP_DIR=' + shlex.quote(str(self.root / 'backup')) + '\n'
 
-    def run_shell(self, code, success=True):
+    def run_shell(self, code, success=True, stdin=''):
         r = subprocess.run(['bash', '-c', self.source + code], text=True, capture_output=True,
+                           input=stdin,
                            env={**os.environ, 'SSH_CONNECTION': ''})
         if success:
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -80,6 +81,42 @@ change_ipv6 1
         self.assertEqual(self.config.read_text(), '# original\n')
         for path, value in self.values.items():
             self.assertEqual(path.read_text().strip(), value)
+
+    def test_runtime_state_uses_interfaces_instead_of_all_or_default(self):
+        # default=1 affects future interfaces, not the currently enabled ones.
+        self.assertEqual(self.run_shell('ipv6_runtime_state').stdout.strip(), 'enabled')
+        (self.proc / 'conf/all/disable_ipv6').write_text('1\n')
+        self.assertEqual(self.run_shell('ipv6_runtime_state').stdout.strip(), 'enabled')
+        (self.proc / 'conf/eth0/disable_ipv6').write_text('1\n')
+        self.assertEqual(self.run_shell('ipv6_runtime_state').stdout.strip(), 'mixed')
+        (self.proc / 'conf/lo/disable_ipv6').write_text('1\n')
+        self.assertEqual(self.run_shell('ipv6_runtime_state').stdout.strip(), 'disabled')
+
+    def test_mixed_status_lists_actual_interface_settings(self):
+        (self.proc / 'conf/eth0/disable_ipv6').write_text('1\n')
+        r = self.run_shell('show_status')
+        self.assertIn('混合', r.stdout)
+        self.assertIn('eth0.disable_ipv6 = 1', r.stdout)
+        self.assertIn('lo.disable_ipv6 = 0', r.stdout)
+
+    def test_interactive_menu_allows_both_directions_from_mixed_state(self):
+        for selection, expected in (('2\nyes\n', '0'), ('1\nyes\n', '1')):
+            with self.subTest(selection=selection):
+                (self.proc / 'conf/eth0/disable_ipv6').write_text('1\n')
+                (self.proc / 'conf/lo/disable_ipv6').write_text('0\n')
+                self.run_shell('show_status() { :; }; check_other_ipv6_configs() { :; }; '
+                               'interactive_menu', stdin=selection)
+                for p in self.values:
+                    self.assertEqual(p.read_text().strip(), expected)
+
+    def test_interactive_cancel_does_not_change_configuration(self):
+        for selection in ('0\n', '\n', '1\nno\n', ''):
+            with self.subTest(selection=selection):
+                self.run_shell('show_status() { :; }; check_other_ipv6_configs() { :; }; '
+                               'interactive_menu', stdin=selection)
+                self.assertEqual(self.config.read_text(), '# original\n')
+                for p, expected in self.values.items():
+                    self.assertEqual(p.read_text().strip(), expected)
 
 
 @unittest.skipUnless(Path(SSHD).is_file() and shutil.which('ssh-keygen'), 'OpenSSH required')
@@ -133,6 +170,42 @@ systemctl() {
         self.run_shell('enforce_key_only_ssh; enforce_key_only_ssh; [[ -z "$(key_only_failures)" ]]')
         self.assertIn('AuthenticationMethods publickey', self.target.read_text())
         self.assertEqual(list(self.dropins.glob('.key-only.*')), [])
+
+    def test_existing_root_login_policy_is_preserved(self):
+        for policy in ('no', 'forced-commands-only', 'prohibit-password', 'yes'):
+            with self.subTest(policy=policy):
+                (self.dropins / '50-root-policy.conf').write_text('PermitRootLogin ' + policy + '\n')
+                self.run_shell('''
+before="$(effective_sshd_config root 127.0.0.1)"
+before_root="$(sshd_value "$before" permitrootlogin)"
+enforce_key_only_ssh
+after="$(effective_sshd_config root 127.0.0.1)"
+[[ "$(sshd_value "$after" permitrootlogin)" == "$before_root" ]]
+config_is_key_only "$after" root
+''')
+                self.assertNotIn('PermitRootLogin', self.target.read_text())
+
+    def test_source_specific_root_deny_is_preserved(self):
+        (self.dropins / '50-root-policy.conf').write_text(
+            'Match User root Address 198.51.100.0/24\n PermitRootLogin no\n')
+        self.run_shell('''
+enforce_key_only_ssh
+after="$(effective_sshd_config root 198.51.100.5)"
+[[ "$(sshd_value "$after" permitrootlogin)" == no ]]
+config_is_key_only "$after" root
+''')
+
+    def test_denied_root_key_alone_cannot_pass_lockout_guard(self):
+        (self.dropins / '50-root-policy.conf').write_text('PermitRootLogin no\n')
+        r = self.run_shell('LOGIN_USERS=(root); user_key_status() { echo yes; }; '
+                           'audit_key_readiness; guard_lockout', success=False)
+        self.assertIn('不计入就绪账户', r.stdout)
+        self.assertIn('拒绝执行', r.stderr)
+
+    def test_ready_normal_user_is_kept_when_root_is_denied(self):
+        (self.dropins / '50-root-policy.conf').write_text('PermitRootLogin no\n')
+        self.run_shell('user_key_status() { echo yes; }; audit_key_readiness; '
+                       '[[ "${READY_USERS[*]}" == maozaizi ]]; guard_lockout')
 
     def test_conflicting_policy_restores_file(self):
         self.run_shell('key_only_failures() { echo conflict; }; enforce_key_only_ssh', success=False)

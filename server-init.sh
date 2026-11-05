@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 统一调度入口；所有组件仍可直接通过 bash 单独运行。
-# Version: 1.1.0 | Updated: 2026-11-05
+# Version: 1.1.1 | Updated: 2026-11-05
 # 用法（root）：bash server-init.sh；从菜单选择一项执行，默认不修改系统。
 # 完整初始化：bash server-init.sh init；保留 IPv6 时追加 --keep-ipv6。
 # 按需安装 Docker：bash server-init.sh docker -u maozaizi。
@@ -256,7 +256,11 @@ EOF
     5)
       read -r -p '输入 check 检查，或 init 初始化（重建规则）[check]：' operation || return 0
       case "${operation:-check}" in
-        check|init) run_component ufw-manager.sh "${operation:-check}" ;;
+        check) run_component ufw-manager.sh check ;;
+        init)
+          confirm '将重建现有防火墙规则并放行 SSH、443/tcp，继续？' || { log '已取消。'; return 0; }
+          run_component ufw-manager.sh init --yes
+          ;;
         *) die '仅支持 check 或 init；其他操作请使用 firewall 子命令，详见 --help。' ;;
       esac
       ;;
@@ -275,7 +279,7 @@ main() {
   (($# == 0)) || shift
   case "$action" in
     -h|--help|help) usage ;;
-    --version|version) printf 'server-init.sh 1.1.0\n' ;;
+    --version|version) printf 'server-init.sh 1.1.1\n' ;;
     menu) [[ $# == 0 ]] || die 'menu 不接受额外参数。'; interactive_menu ;;
     init) initialize "$@" ;;
     --keep-ipv6|--defer-ssh-lockdown) initialize "$action" "$@" ;;

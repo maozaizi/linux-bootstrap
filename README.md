@@ -13,6 +13,7 @@ bash server-init.sh
 不带参数只显示菜单，选择一项后执行并退出；回车或输入 `0` 退出，不会自动执行整套初始化。
 菜单提供基础环境、Swap、BBR、IPv6、防火墙、Docker、只读审计、SSH 收口和单独校时。
 基础环境会配置 root 和运维用户的 Zsh，保留原 SSH 策略；防火墙默认检查，选择 `init` 才进入重建确认。
+确认重建后，入口才向 UFW 组件传入 `--yes`；取消不改动规则。
 
 需要完整流程时，明确执行：
 
@@ -113,6 +114,9 @@ bash server-init.sh docker -u maozaizi
 | Docker | `bash install-docker.sh -u maozaizi` | `bash server-init.sh docker -u maozaizi` |
 
 所有组件参数原样转交，各脚本不依赖入口。直接运行组件时仍需遵守自身的公钥、权限与确认要求。
+SSH 收口只限制认证方式，不重写原有 root 登录限制；原先禁止 root 登录时仍保持禁止。
+IPv6 状态按实际接口显示，可能为混合状态；交互模式可明确选择关闭或开启。
+Docker 的 `-L` 日志参数在安装、卸载和配置修改前校验，错误参数会直接停止。
 
 ## 失败与重跑
 
