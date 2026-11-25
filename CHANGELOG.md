@@ -15,6 +15,8 @@
 - 未验证的 Debian ≥ 12 / Ubuntu ≥ 22.04 版本改为警告后继续（以前直接拒绝）。
 
 **其他**
+- 支持 Ubuntu 26.04 LTS；软件清单改用 `libncurses-dev`，兼容所有支持版本。
+- 清单中的 `ping` 优先保留已安装的 `inetutils-ping`，避免 APT 为替换它而中止。
 - 首次覆盖 `/etc/zsh/zshrc` 前备份原文件。
 - 新增 GitHub Actions CI 和容器冒烟测试；发布流程改为分支 + PR。
 
