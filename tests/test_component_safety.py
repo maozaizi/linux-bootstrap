@@ -248,14 +248,22 @@ config="$(effective_sshd_config root 127.0.0.1)"
             'Match Address 198.51.100.0/24,2001:db8:1::/48\n'
             ' PasswordAuthentication yes\n KbdInteractiveAuthentication yes\n'
             ' AuthenticationMethods any\n')
-        r = self.run_shell('''
+        code = '''
 SSH_CONNECTION='198.51.100.23 1234 203.0.113.9 22'
 enforce_key_only_ssh
 for addr in 198.51.100.23 2001:db8:1::23; do
   config="$(effective_sshd_config maozaizi "$addr")"
   config_is_key_only "$config" maozaizi || exit 1
 done
-''')
+'''
+        r = subprocess.run(['bash', '-c', self.source + code], capture_output=True, text=True)
+        if r.returncode != 0 and '"any" must appear alone' in r.stderr:
+            # OpenSSH < 10（如 Ubuntu 24.04、Debian 12）拒绝在已有设置后出现 any：
+            # 收口必须安全失败并恢复原文件，不能留下半成品配置。
+            self.assertEqual(self.target.read_text(), 'PubkeyAuthentication yes\n')
+            self.assertIn('已尝试恢复原配置', r.stderr)
+            return
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn('publickey-only', r.stdout)
 
     def test_verifier_includes_current_ssh_source(self):
