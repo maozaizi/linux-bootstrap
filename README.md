@@ -1,113 +1,52 @@
 # Linux 服务器初始化
 
-新 VPS 以 root 执行，先下载，再从菜单选择操作：
+Debian / Ubuntu 新 VPS 的标准化初始化脚本：基础环境、Swap、BBR、IPv6、UFW、SSH 收口，Docker 可按需安装。
+每个组件都能独立运行，`server-init.sh` 只负责调度。
+
+## 快速开始
+
+以 root 登录新 VPS：
 
 ```bash
+apt update && apt install -y git ca-certificates   # 没有 Git 时
 git clone https://github.com/maozaizi/linux-bootstrap.git /root/linux-bootstrap
 cd /root/linux-bootstrap
-bash server-init.sh
+bash server-init.sh          # 显示菜单，只执行选中的一项；回车或 0 退出
 ```
 
-若没有 Git，先执行 `apt update && apt install -y git ca-certificates`。下载公开仓库无需登录 GitHub。
-
-不带参数只显示菜单，选择一项后执行并退出；回车或输入 `0` 退出，不会自动执行整套初始化。
-菜单提供基础环境、Swap、BBR、IPv6、防火墙、Docker、只读审计、SSH 收口和单独校时。
-基础环境会配置 root 和运维用户的 Zsh，保留原 SSH 策略；防火墙默认检查，选择 `init` 才进入重建确认。
-确认重建后，入口才向 UFW 组件传入 `--yes`；取消不改动规则。
-
-需要完整流程时，明确执行：
+执行完整初始化需明确指定：
 
 ```bash
 bash server-init.sh init
-```
-
-基础环境或完整初始化会要求提供公钥，需要设置运维用户密码时会要求输入两次。
-也可以通过环境变量提供公钥；例如执行完整流程：
-
-```bash
+# 可预先提供公钥，避免交互粘贴
 BOOTSTRAP_PUBKEY_FILE=/root/id_ed25519.pub bash server-init.sh init
-# 也支持直接提供完整单行公钥
-BOOTSTRAP_PUBKEY="ssh-ed25519 完整公钥内容" bash server-init.sh init
-```
-
-默认运维用户 `maozaizi`，时区 `Asia/Shanghai`。apt 遇到新机自动更新占用 dpkg 锁时最多等待 300 秒
-（`APT_LOCK_TIMEOUT` 可调），升级时保留已修改的配置文件，不弹出冲突提示。完整初始化依次执行：
-
-1. 只读预检：校验公钥、软件清单和初始化参数。
-2. 内存低于 768MB 且没有活动 Swap 时，先创建默认 1G Swap。
-3. Bootstrap：系统更新、工具、时区与自动校时、运维用户、公钥、sudo、Zsh 与历史记录，保留原 SSH 策略。
-4. 启用原生 BBR；不替换内核。
-5. 关闭 IPv6；通过 IPv6 登录时拒绝此操作。
-6. 全新 UFW 放行 SSH 与 `443/tcp`；已有规则保留。已配置但未启用时停止，交由操作者处理。
-7. 展示审计结果；在新终端验证运维用户公钥登录和 `sudo -v` 后，输入 `verified` 关闭 SSH 密码认证。
-
-不安装 Docker、不部署 Node、不写入面板 IP、不自动重启。Hy2 UDP 端口及节点管理端口属于后续业务部署。
-统一初始化保留当前 SSH 监听端口；需要变更端口时，请单独配置并验证防火墙与新连接。
-已有防火墙配置仅检查，不能据此认定它已符合上述新机策略。
-
-## 软件包清单
-
-基础软件包统一维护在同目录的 `soft-list`：每行一个包名，支持空行、`#` 注释和行尾注释。
-基础工具按清单交给 apt，依赖由 apt 自行处理；自动校时服务另按下节按需补齐。
-清单缺失、为空或包名格式错误时，在系统变更前停止。清单作为数据读取，不执行其中内容。
-清单拒绝 `sudo-` 等卸载操作符，安装命令使用 `--no-remove` 阻止删除软件包；包是否可用由 apt 校验。
-
-修改后，以 root 单独应用清单即可，无需公钥或重跑其他初始化步骤：
-
-```bash
-bash bootstrap-debian.sh --packages-only
-# 等价入口
-bash server-init.sh bootstrap --packages-only
-
-# 按需使用其他清单
-SOFT_LIST_FILE=/root/custom-soft-list bash bootstrap-debian.sh --packages-only
-```
-
-新增条目在下次应用时安装；删除条目不会自动卸载已有软件。
-已有安装完成标记不会跳过这项操作。apt 仍可能更新清单中已安装的软件包。
-单独运行 Bootstrap 时，请同时保留 `soft-list`，或通过 `SOFT_LIST_FILE` 指定文件。
-
-清单使用 `libncurses-dev` 安装 ncurses 开发头文件，兼容 Ubuntu 26.04 及其他支持版本。
-在 Debian 13 和 Ubuntu 26.04 中，APT 通过 `bind9-dnsutils` 安装清单中的 `dnsutils`。
-清单中的 `ping` 优先保留已安装的 `inetutils-ping`，其余情况下使用 `iputils-ping`。
-自定义清单若需指定实现，可以填写具体包名。
-
-## 自动校时与 Shell 生效
-
-初始化优先保留已运行的常见校时服务；有可用服务时直接启用，无可用服务时才安装 `systemd-timesyncd`。
-按需安装使用 `--no-remove`，不会为校时移除已有软件，也不覆盖现有时间源配置。
-服务启动和首次同步是两件事；尚未同步时会明确提示待检查，不会无限等待或误报同步完成。
-原有步骤标记不跳过校时检查；只安装软件清单不会启用校时。
-
-已经初始化过的服务器可更新代码后，以 root 单独执行，无需公钥或重跑其他步骤：
-
-```bash
-bash bootstrap-debian.sh --time-sync-only
-timedatectl status
-```
-
-Zsh 默认登录 Shell 与配置在重新登录后生效。需要当前终端立即切换时，手动执行 `exec zsh -l`。
-脚本不会替换调用它的外层终端。
-
-## 可选设置
-
-```bash
-# 保留 IPv6；暂缓 SSH 密码收口
-bash server-init.sh --help
+BOOTSTRAP_PUBKEY="ssh-ed25519 AAAA... comment" bash server-init.sh init
+# 保留 IPv6 / 暂缓关闭 SSH 密码
 bash server-init.sh init --keep-ipv6 --defer-ssh-lockdown
-
-# 沿用组件环境变量
-BOOTSTRAP_USER=ops BOOTSTRAP_TZ=Asia/Shanghai bash server-init.sh
-
-# 日后按需安装 Docker
-bash server-init.sh docker -u maozaizi
 ```
 
-## 组件保持独立
+## 完整初始化流程
+
+| 步骤 | 内容 |
+|---|---|
+| 1. 预检 | 只读校验系统版本、公钥、软件清单和参数；不通过则不做任何修改 |
+| 2. Swap | 内存低于 768MB 且无活动 Swap 时，创建 1G `/swapfile` |
+| 3. 基础环境 | 系统更新、`soft-list` 软件、时区与自动校时、运维用户（公钥 + sudo + Zsh）；保留原 SSH 策略 |
+| 4. BBR | 启用内核自带 BBR + fq，不替换内核 |
+| 5. IPv6 | 关闭 IPv6（通过 IPv6 登录时拒绝执行；`--keep-ipv6` 跳过） |
+| 6. 防火墙 | 全新 UFW：默认拒绝入站，放行 SSH 和 `443/tcp`；已有规则只检查不改 |
+| 7. SSH 收口 | 展示审计结果；你在新终端验证公钥登录和 `sudo -v` 后输入 `verified`，才关闭密码认证 |
+
+默认运维用户 `maozaizi`，时区 `Asia/Shanghai`。初始化**不会**：安装 Docker、部署节点、写入面板 IP、修改 SSH 端口、自动重启。
+Hy2 UDP 等业务端口属于后续部署。
+
+## 组件
 
 | 功能 | 直接运行 | 通过入口运行 |
 |---|---|---|
 | 基础环境 | `bash bootstrap-debian.sh` | `bash server-init.sh bootstrap` |
+| 只装软件清单 | `bash bootstrap-debian.sh --packages-only` | `bash server-init.sh bootstrap --packages-only` |
+| 只启用校时 | `bash bootstrap-debian.sh --time-sync-only` | 菜单 9 |
 | Swap | `bash setup-swap.sh` | `bash server-init.sh swap` |
 | BBR | `bash enable-bbr.sh` | `bash server-init.sh bbr` |
 | IPv6 | `bash ipv6-manager.sh status` | `bash server-init.sh ipv6 status` |
@@ -116,80 +55,82 @@ bash server-init.sh docker -u maozaizi
 | SSH 收口 | `bash server-security-audit.sh` | `bash server-init.sh audit` |
 | Docker | `bash install-docker.sh -u maozaizi` | `bash server-init.sh docker -u maozaizi` |
 
-所有组件参数原样转交，各脚本不依赖入口。直接运行组件时仍需遵守自身的公钥、权限与确认要求。
-Bootstrap 以目标用户身份写入公钥及用户 Shell 配置，拒绝这些路径上的已有符号链接或异常文件类型。
-已有文件须可由目标用户写入；拒绝操作时先检查属主和路径，不会自动接管其他文件。
-单独运行 Bootstrap 的 SSH 加固时，未设置 `SSH_PORT` 则保留当前监听端口（端口会变化时停止并恢复）；
-只有 `RESTRICT_SSH_USERS=1` 才写入 `AllowUsers`，避免挡住服务商默认账户等其他用户。
-首次接管 `/etc/zsh/zshrc` 前，发行版原文件保存为 `/etc/zsh/zshrc.bootstrap-orig`。
-SSH 收口只限制认证方式，不重写原有 root 登录限制；原先禁止 root 登录时仍保持禁止。
-升级旧版收口文件时，也保留其中的 root 策略及来源限制。
-IPv6 状态按实际接口显示，可能为混合状态；交互模式可明确选择关闭或开启。
-Docker 的 `-L` 日志参数在安装、卸载和配置修改前校验，错误参数会直接停止。
+参数原样转交给组件；各脚本的 `--help` 列出全部选项。
+
+## 常用配置（环境变量）
+
+| 变量 | 默认值 | 作用 |
+|---|---|---|
+| `BOOTSTRAP_USER` | `maozaizi` | 运维用户名 |
+| `BOOTSTRAP_TZ` | `Asia/Shanghai` | 时区 |
+| `BOOTSTRAP_PUBKEY` / `BOOTSTRAP_PUBKEY_FILE` | 交互输入 | 运维用户的单行 SSH 公钥 |
+| `SOFT_LIST_FILE` | 同目录 `soft-list` | 软件清单 |
+| `APT_LOCK_TIMEOUT` | `300` | apt 等待 dpkg 锁的秒数（新机自动更新常占锁） |
+| `SSH_PORT` | 空 = 保持当前端口 | 仅单独运行 bootstrap 的 SSH 加固时生效：写入端口并同步 `ssh.socket` |
+| `RESTRICT_SSH_USERS` | `0` | 设为 `1` 时写入 `AllowUsers`，只允许运维用户和 root 登录 SSH |
+
+## 软件清单 `soft-list`
+
+- 每行一个包名，支持空行和 `#` 注释；清单只当数据读取，不会执行。
+- 格式错误、为空或含卸载写法（如 `sudo-`）时，在任何修改前停止；安装使用 `--no-remove`，不会删除软件。
+- 新增条目下次应用时安装；删除条目不会卸载已装软件。
+- `ping` 优先保留已安装的 `inetutils-ping`，否则用 `iputils-ping`；需要指定实现就写具体包名。
+
+## 安全行为
+
+- **apt**：等待 dpkg 锁；升级遇到配置文件冲突时保留现有配置，不弹出提示；每次运行安装前刷新软件源。
+- **SSH**：完整初始化保留当前端口和登录策略。收口只关闭密码和键盘交互认证，不改 root 登录限制。
+  收口前确认至少有一个账户已有可用公钥，验证或重载失败时自动恢复原配置。
+- **单独运行 bootstrap 的 SSH 加固**：不设 `SSH_PORT` 就保留当前端口，端口会变化时停止并回滚；
+  默认不写 `AllowUsers`，避免挡住服务商默认账户。
+- **文件写入**：公钥和用户 Shell 配置以目标用户身份写入，拒绝符号链接；首次覆盖 `/etc/zsh/zshrc` 前备份为 `zshrc.bootstrap-orig`。
+- **防火墙**：UFW 重建前完整备份到 `/var/backups/ufw-manager/`，失败时恢复。Docker 发布的端口不受 UFW 约束，`check` 会提示。
 
 ## 失败与重跑
 
-初始化用锁避免同时运行，日志保存在 `/var/log/server-init-日期-时间.log`。
-任何步骤失败立即停止；已经完成的包安装、更新等操作不会整体撤销。
-SSH 和 IPv6 配置操作提供局部失败恢复，恢复服务仍失败时会明确提示人工检查。
-UFW 重建前备份配置和原启用状态，失败时尝试恢复；完整备份保存在 `/var/backups/ufw-manager/`。
-`restrict` 读取或删除规则失败、仍有公网规则覆盖时停止，不会自动删除影响其他端口的范围规则。
-低内存 Swap 在系统更新之前准备；之后取消密码输入或发生错误，不会自动撤销已准备的 Swap。
+- 初始化加锁，防止重复运行；日志保存在 `/var/log/server-init-日期-时间.log`。
+- 任一步骤失败立即停止。SSH、IPv6、UFW 有局部回滚；已完成的软件安装和更新不会撤销。
+- 修复后重新执行即可：已完成的步骤会跳过，用户、公钥、软件清单和校时会重新检查。
+- 最终输出会分别列出 SSH 收口和时间同步状态，“基础初始化完成”不代表所有待办都已处理。
+- Zsh 在重新登录后生效；当前终端需要时手动执行 `exec zsh -l`。
 
-修复问题后再次执行入口。Bootstrap 保留已有步骤标记，但重新检查用户与公钥；
-已有 Swap 和防火墙规则不会自动替换。若暂缓 SSH 收口，程序会明确提示，该步骤仍需日后完成。
-最终结果分别列出 SSH 收口和时间同步状态；“基础初始化完成”不代表所有待办都已完成。
+## 支持的系统
 
-已验证 Ubuntu 22.04/24.04/26.04 LTS、Debian 12/13；其他 Debian 12+ / Ubuntu 22.04+ 版本会警告后继续，
-更低版本或其他发行版直接停止。要求 root、Bash 4+、systemd 和交互终端。
-关闭密码认证前的真实登录验证不能用本机静态检查代替。
+- 已验证：Ubuntu 22.04 / 24.04 / 26.04 LTS，Debian 12 / 13。
+- 其他 Debian ≥ 12、Ubuntu ≥ 22.04 的版本：警告后继续。更低版本或其他发行版：直接停止。
+- 运行要求：root、Bash 4+、systemd、交互终端。
 
-## 隐私
-
-通过服务器上的文件或环境变量提供公钥和业务密钥。
-真实服务器配置、凭据和日志请保存在 `local/` 等忽略目录，提交前检查文件列表。
-
-## 本地回归检查
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
-```
-
-测试使用临时目录、真实 OpenSSH 配置解析与模拟服务命令，不配置宿主机。
-
-发行版冒烟测试只在一次性容器中运行：执行只读预检，并用 `apt-get -s` 确认 `soft-list` 在该版本可安装：
-
-```bash
-for img in debian:12 debian:13 ubuntu:22.04 ubuntu:24.04 ubuntu:26.04; do
-  docker run --rm -v "$PWD:/src:ro" "$img" bash /src/tests/container-smoke.sh
-done
-```
-
-GitHub Actions（`.github/workflows/ci.yml`）在每次 PR 和推送 `main` 时运行语法检查、ShellCheck（error 级别）、
-单元测试和上述五个发行版的冒烟测试。这些检查不能替代目标服务器上的完整部署验收。
-
-## 更新与发布
-
-修改后更新相关脚本的版本和简短注释，检查隐私信息并运行上述回归检查，再通过分支和 Pull Request 发布：
-
-```bash
-git switch -c fix/简短说明
-git add 本次修改的文件
-git diff --cached
-git commit -m "fix: 说明本次更新"
-git push -u origin HEAD
-gh pr create --fill
-```
-
-CI 通过并 review 后由维护者合并到 `main`；不直接推送 `main`。
-提交前检查新增文件，确保没有真实密钥、密码或服务器配置。发布使用 GitHub 隐私邮箱。
-需要固定一批服务器使用同一版本时，在合并后的 `main` 上打发布标签（如 `v1.3.0`）。
-
-VPS 上更新脚本：
+## 在 VPS 上更新
 
 ```bash
 git -C /root/linux-bootstrap pull --ff-only
 ```
 
-拉取只更新脚本文件，不自动改变服务器配置。需要应用哪项更新，就单独执行对应脚本。
-请将服务器自己的配置保存在仓库目录以外，避免更新冲突。
+拉取只更新脚本，不改服务器配置；要应用哪项更新，就单独运行对应组件。
+服务器自己的配置放在仓库目录以外，避免更新冲突。需要固定版本时检出发布标签（如 `v1.3.0`）。
+
+## 维护与发布
+
+**本地检查**（不修改宿主机）：
+
+```bash
+for f in *.sh tests/*.sh; do bash -n "$f"; done
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+
+# 一次性容器：只读预检 + 软件清单可安装性（apt-get -s）
+for img in debian:12 debian:13 ubuntu:22.04 ubuntu:24.04 ubuntu:26.04; do
+  docker run --rm -v "$PWD:/src:ro" "$img" bash /src/tests/container-smoke.sh
+done
+```
+
+**CI**：`.github/workflows/ci.yml` 在每个 PR 和 `main` 的推送上运行语法检查、ShellCheck（error 级别）、单元测试和上述五个发行版的冒烟测试。
+这些检查不能替代真实服务器上的部署验收。
+
+**发布流程**：
+
+1. 新建分支修改，更新相关脚本的 `Version` 头和简短说明，并在 `CHANGELOG.md` 记录。
+2. 检查差异中没有密钥、密码、真实服务器地址；提交使用 GitHub 隐私邮箱。
+3. 推送分支并开 PR；CI 通过、review 后合并到 `main`，不直接推送 `main`。
+4. 需要固定版本时，在合并后的 `main` 上打标签。
+
+真实服务器配置、凭据和日志放在 `local/` 等已忽略的目录中。

@@ -1,7 +1,7 @@
 # 维护约定
 
 - 当前目录是维护源，GitHub 仓库为 `maozaizi/linux-bootstrap`，默认分支 `main`。
-- 保持 Shell 脚本独立、简单；修改脚本时更新版本号和简短注释，文件开头保留基础用法。
+- 保持 Shell 脚本独立、简单；修改脚本时更新版本号和简短注释，文件开头保留基础用法；用户可见的变化记入 `CHANGELOG.md`。
 - 修改前检查 Git 状态，保留用户已有改动；仅暂存本次确认要发布的文件。
 - 提交前检查差异中的密钥、密码、公钥、真实服务器地址和个人信息。
 - 脚本变更后检查 Bash 语法，并运行 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`；不在本机执行服务器初始化。
