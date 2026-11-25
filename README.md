@@ -30,7 +30,8 @@ BOOTSTRAP_PUBKEY_FILE=/root/id_ed25519.pub bash server-init.sh init
 BOOTSTRAP_PUBKEY="ssh-ed25519 完整公钥内容" bash server-init.sh init
 ```
 
-默认运维用户 `maozaizi`，时区 `Asia/Shanghai`。完整初始化依次执行：
+默认运维用户 `maozaizi`，时区 `Asia/Shanghai`。apt 遇到新机自动更新占用 dpkg 锁时最多等待 300 秒
+（`APT_LOCK_TIMEOUT` 可调），升级时保留已修改的配置文件，不弹出冲突提示。完整初始化依次执行：
 
 1. 只读预检：校验公钥、软件清单和初始化参数。
 2. 内存低于 768MB 且没有活动 Swap 时，先创建默认 1G Swap。
@@ -118,6 +119,9 @@ bash server-init.sh docker -u maozaizi
 所有组件参数原样转交，各脚本不依赖入口。直接运行组件时仍需遵守自身的公钥、权限与确认要求。
 Bootstrap 以目标用户身份写入公钥及用户 Shell 配置，拒绝这些路径上的已有符号链接或异常文件类型。
 已有文件须可由目标用户写入；拒绝操作时先检查属主和路径，不会自动接管其他文件。
+单独运行 Bootstrap 的 SSH 加固时，未设置 `SSH_PORT` 则保留当前监听端口（端口会变化时停止并恢复）；
+只有 `RESTRICT_SSH_USERS=1` 才写入 `AllowUsers`，避免挡住服务商默认账户等其他用户。
+首次接管 `/etc/zsh/zshrc` 前，发行版原文件保存为 `/etc/zsh/zshrc.bootstrap-orig`。
 SSH 收口只限制认证方式，不重写原有 root 登录限制；原先禁止 root 登录时仍保持禁止。
 升级旧版收口文件时，也保留其中的 root 策略及来源限制。
 IPv6 状态按实际接口显示，可能为混合状态；交互模式可明确选择关闭或开启。
@@ -136,7 +140,8 @@ UFW 重建前备份配置和原启用状态，失败时尝试恢复；完整备�
 已有 Swap 和防火墙规则不会自动替换。若暂缓 SSH 收口，程序会明确提示，该步骤仍需日后完成。
 最终结果分别列出 SSH 收口和时间同步状态；“基础初始化完成”不代表所有待办都已完成。
 
-支持 Ubuntu 22.04/24.04/26.04 LTS、Debian 12/13，要求 root、Bash 4+、systemd 和交互终端。
+已验证 Ubuntu 22.04/24.04/26.04 LTS、Debian 12/13；其他 Debian 12+ / Ubuntu 22.04+ 版本会警告后继续，
+更低版本或其他发行版直接停止。要求 root、Bash 4+、systemd 和交互终端。
 关闭密码认证前的真实登录验证不能用本机静态检查代替。
 
 ## 隐私
@@ -151,23 +156,34 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 ```
 
 测试使用临时目录、真实 OpenSSH 配置解析与模拟服务命令，不配置宿主机。
-它不能替代目标 Linux 服务器上的完整部署验收。
+
+发行版冒烟测试只在一次性容器中运行：执行只读预检，并用 `apt-get -s` 确认 `soft-list` 在该版本可安装：
+
+```bash
+for img in debian:12 debian:13 ubuntu:22.04 ubuntu:24.04 ubuntu:26.04; do
+  docker run --rm -v "$PWD:/src:ro" "$img" bash /src/tests/container-smoke.sh
+done
+```
+
+GitHub Actions（`.github/workflows/ci.yml`）在每次 PR 和推送 `main` 时运行语法检查、ShellCheck（error 级别）、
+单元测试和上述五个发行版的冒烟测试。这些检查不能替代目标服务器上的完整部署验收。
 
 ## 更新与发布
 
-本地维护使用当前项目目录。修改后更新相关脚本的版本和简短注释，检查隐私信息并运行上述回归检查，再提交发布：
+修改后更新相关脚本的版本和简短注释，检查隐私信息并运行上述回归检查，再通过分支和 Pull Request 发布：
 
 ```bash
-git status
-git diff
-git add -A
+git switch -c fix/简短说明
+git add 本次修改的文件
 git diff --cached
-git commit -m "说明本次更新"
-git push origin main
+git commit -m "fix: 说明本次更新"
+git push -u origin HEAD
+gh pr create --fill
 ```
 
+CI 通过并 review 后由维护者合并到 `main`；不直接推送 `main`。
 提交前检查新增文件，确保没有真实密钥、密码或服务器配置。发布使用 GitHub 隐私邮箱。
-需要固定一批服务器使用同一版本时，使用发布标签；首个基础版本为 `v1.0.0`。
+需要固定一批服务器使用同一版本时，在合并后的 `main` 上打发布标签（如 `v1.3.0`）。
 
 VPS 上更新脚本：
 
