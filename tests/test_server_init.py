@@ -61,6 +61,17 @@ setup_firewall() {{ echo firewall >> {shlex.quote(str(self.calls))}; }}
             result = subprocess.run(['bash', str(ROOT / 'server-init.sh'), arg], capture_output=True)
             self.assertEqual(result.returncode, 0)
 
+    def test_os_policy_matches_bootstrap(self):
+        def extract(path):
+            text = path.read_text()
+            start = text.index('os_meets_minimum() {')
+            return text[start:text.index('\n}\n', start) + 2]
+        self.assertEqual(extract(ROOT / 'server-init.sh'), extract(ROOT / 'bootstrap-debian.sh'))
+        for case, ok in [('debian 12', True), ('debian 14', True), ('ubuntu 25.10', True),
+                         ('ubuntu 20.04', False), ('debian 11', False), ('fedora 41', False)]:
+            with self.subTest(case=case):
+                self.run_shell('os_meets_minimum ' + case, success=ok)
+
     def test_every_component_dispatches_independently(self):
         mapping = {'bootstrap': 'bootstrap-debian', 'swap': 'setup-swap', 'bbr': 'enable-bbr',
                    'ipv6': 'ipv6-manager', 'firewall': 'ufw-manager',

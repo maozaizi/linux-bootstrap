@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # install-docker.sh — 独立安装 Docker Engine、Buildx 和 Compose。
-# Version: 1.5.3 | Updated: 2026-11-05
+# Version: 1.6.0 | Updated: 2026-11-25（apt 等待 dpkg 锁，保留已有配置文件）
 # 用法：bash install-docker.sh [-u USER] [-S] [-L]
 # -u：加入 docker 组；-S：跳过 hello-world；-L：仅在 daemon.json 不存在时配置日志轮转。
 # 日志参数：DOCKER_LOG_MAX_SIZE=10m，DOCKER_LOG_MAX_FILE=3；必须为正数，不覆盖已有配置。
 # 使用官方仓库，保留已有数据；docker 组具有接近 root 的权限。
 # Docker 发布端口需单独检查，不能仅依赖 UFW。请保存文件后运行。
+# APT_LOCK_TIMEOUT：等待 dpkg 锁的秒数（默认 300），避免新机自动更新期间直接失败。
 
 set -euo pipefail
 trap 'echo -e "\033[1;31m[ERR ] 发生错误：行号 $LINENO\033[0m" >&2' ERR
@@ -15,6 +16,18 @@ warn()  { printf "\033[1;33m[WARN]\033[0m %s\n" "$*"; }
 die()   { printf "\033[1;31m[ERR ]\033[0m %s\n" "$*" >&2; exit 1; }
 
 is_tty() { [[ -t 0 && -t 1 ]]; }
+
+APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-300}"
+[[ "$APT_LOCK_TIMEOUT" =~ ^[0-9]{1,5}$ ]] || die "APT_LOCK_TIMEOUT 必须为秒数：${APT_LOCK_TIMEOUT}"
+
+# 等待 dpkg 锁，配置文件冲突时保留现有配置，不弹出交互提示。
+apt_get() {
+  DEBIAN_FRONTEND=noninteractive apt-get \
+    -o "DPkg::Lock::Timeout=${APT_LOCK_TIMEOUT}" \
+    -o Dpkg::Options::=--force-confdef \
+    -o Dpkg::Options::=--force-confold \
+    "$@"
+}
 
 ask_yes_no() {
   # Usage: ask_yes_no "question" "default"(Y/N)
@@ -155,8 +168,8 @@ else
 fi
 
 if [[ -z "${CODENAME}" ]]; then
-  apt-get update -y
-  apt-get install -y --no-install-recommends lsb-release
+  apt_get update -y
+  apt_get install -y --no-install-recommends lsb-release
   CODENAME="$(lsb_release -cs || true)"
 fi
 [[ -n "$CODENAME" ]] || die "无法获取发行版代号（UBUNTU_CODENAME/VERSION_CODENAME/lsb_release）。"
@@ -172,8 +185,8 @@ info "系统：$ID_LC；代号：$CODENAME；架构：$ARCH"
 
 # 依赖（先装依赖，便于后续探测仓库；此步不改动 Docker 相关包）
 info "安装依赖（ca-certificates, curl）..."
-apt-get update -y
-apt-get install -y --no-install-recommends ca-certificates curl
+apt_get update -y
+apt_get install -y --no-install-recommends ca-certificates curl
 
 # 提前探测官方仓库是否支持当前发行版代号（在卸载任何包之前，尽早失败）
 info "探测 Docker 官方仓库是否支持 ${ID_LC}/${CODENAME}..."
@@ -200,7 +213,7 @@ for p in "${CONFLICT_PKGS[@]}"; do
 done
 if [[ ${#TO_REMOVE[@]} -gt 0 ]]; then
   warn "检测到冲突/非官方包，将卸载：${TO_REMOVE[*]}（/var/lib/docker 数据不会被删除；使用这些包运行的容器会中断）"
-  apt-get remove -y "${TO_REMOVE[@]}"
+  apt_get remove -y "${TO_REMOVE[@]}"
 else
   info "未发现冲突/非官方 Docker 包。"
 fi
@@ -248,8 +261,8 @@ fi
 
 # 安装核心组件（与官方一致，不使用 --no-install-recommends）
 info "安装 Docker Engine / CLI / containerd / buildx / compose 插件..."
-apt-get update -y
-apt-get install -y \
+apt_get update -y
+apt_get install -y \
   docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
 # 服务管理：兼容无 systemd 的环境

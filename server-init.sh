@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 统一调度入口；所有组件仍可直接通过 bash 单独运行。
-# Version: 1.1.2 | Updated: 2026-11-25（整套初始化接受 Ubuntu 26.04 LTS）
+# Version: 1.2.0 | Updated: 2026-11-25（Debian 12+ / Ubuntu 22.04+ 中未验证版本警告后继续）
 # 用法（root）：bash server-init.sh；从菜单选择一项执行，默认不修改系统。
 # 完整初始化：bash server-init.sh init；保留 IPv6 时追加 --keep-ipv6。
 # 按需安装 Docker：bash server-init.sh docker -u maozaizi。
@@ -16,6 +16,10 @@ SSH_LOCKDOWN_DONE=0
 log() {
   printf '[INFO] %s\n' "$*"
   if [[ -n "${LOG_FILE:-}" ]]; then printf '[INFO] %s\n' "$*" >> "$LOG_FILE"; fi
+}
+warn() {
+  printf '[WARN] %s\n' "$*" >&2
+  if [[ -n "${LOG_FILE:-}" ]]; then printf '[WARN] %s\n' "$*" >> "$LOG_FILE"; fi
 }
 die() {
   printf '[ERROR] %s\n' "$*" >&2
@@ -93,6 +97,21 @@ ssh_context() {
   return 0
 }
 
+# 与 bootstrap-debian.sh 相同的最低版本规则：Debian >= 12、Ubuntu >= 22.04。
+os_meets_minimum() {
+  local id="$1" version="$2" minimum major minor min_major min_minor
+  case "$id" in
+    debian) minimum=12 ;;
+    ubuntu) minimum=22.04 ;;
+    *) return 1 ;;
+  esac
+  [[ "$version" =~ ^([0-9]+)(\.([0-9]+))?$ ]] || return 1
+  major=$((10#${BASH_REMATCH[1]})); minor=$((10#${BASH_REMATCH[3]:-0}))
+  min_major=$((10#${minimum%%.*})); min_minor=0
+  [[ "$minimum" != *.* ]] || min_minor=$((10#${minimum#*.}))
+  (( major > min_major || (major == min_major && minor >= min_minor) ))
+}
+
 preflight() {
   [[ "$(uname -s)" == Linux && "$EUID" -eq 0 ]] || die "初始化需在 Linux 服务器上以 root 执行。"
   (( BASH_VERSINFO[0] >= 4 )) || die "需要 Bash 4 或更新版本。"
@@ -103,7 +122,10 @@ preflight() {
   version="$(. /etc/os-release; printf '%s' "$VERSION_ID")"
   case "$id:$version" in
     ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|debian:12|debian:13) ;;
-    *) die "仅支持 Ubuntu 22.04/24.04/26.04 和 Debian 12/13。" ;;
+    *)
+      os_meets_minimum "$id" "$version" || die "仅支持 Debian 12+ 和 Ubuntu 22.04+（当前：${id} ${version}）。"
+      warn "${id} ${version} 不在已验证列表（Ubuntu 22.04/24.04/26.04、Debian 12/13）中，继续执行；请留意各步骤输出。"
+      ;;
   esac
   for cmd in ssh-keygen systemctl flock tee awk tr sed; do
     command -v "$cmd" >/dev/null 2>&1 || die "缺少必要命令：$cmd"
@@ -279,7 +301,7 @@ main() {
   (($# == 0)) || shift
   case "$action" in
     -h|--help|help) usage ;;
-    --version|version) printf 'server-init.sh 1.1.2\n' ;;
+    --version|version) printf 'server-init.sh 1.2.0\n' ;;
     menu) [[ $# == 0 ]] || die 'menu 不接受额外参数。'; interactive_menu ;;
     init) initialize "$@" ;;
     --keep-ipv6|--defer-ssh-lockdown) initialize "$action" "$@" ;;

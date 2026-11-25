@@ -279,6 +279,74 @@ step_harden_ssh
         self.assertEqual(target.read_text(), original)
         self.assertFalse((self.state / 'harden_ssh.done').exists())
 
+    def test_default_keeps_current_port_and_skips_allowusers(self):
+        self.config.write_text(self.config.read_text() + 'Port 2222\n')
+        self.run_shell('SOCKET_ENABLED=1; step_harden_ssh')
+        managed = (self.dropins / '10-bootstrap.conf').read_text()
+        self.assertNotIn('Port ', managed)
+        self.assertNotIn('AllowUsers', managed)
+        self.assertFalse(self.socket.exists())
+        self.assertNotIn('restart ssh.socket', (self.root / 'systemctl.log').read_text())
+
+    def test_default_preserves_port_from_previous_managed_file(self):
+        target = self.dropins / '10-bootstrap.conf'
+        target.write_text('# Managed by bootstrap-debian.sh\nPort 2222\nAllowUsers maozaizi root\n')
+        self.run_shell('step_harden_ssh')
+        managed = target.read_text()
+        self.assertIn('Port 2222\n', managed)
+        self.assertNotIn('AllowUsers', managed)
+
+    def test_explicit_port_and_user_restriction(self):
+        self.run_shell('SSH_PORT=2222; RESTRICT_SSH_USERS=1; step_harden_ssh')
+        managed = (self.dropins / '10-bootstrap.conf').read_text()
+        self.assertIn('Port 2222\n', managed)
+        self.assertIn('AllowUsers maozaizi root\n', managed)
+        self.run_shell('SSH_PORT=2222; RESTRICT_SSH_USERS=1; DISABLE_ROOT_SSH=1; step_harden_ssh')
+        self.assertIn('AllowUsers maozaizi\n', (self.dropins / '10-bootstrap.conf').read_text())
+
+    def test_preflight_accepts_unset_port_and_rejects_bad_options(self):
+        key = shlex.quote(self.key())
+        self.run_shell('check_supported_os() { :; }; BOOTSTRAP_PUBKEY=' + key +
+                       '; SSH_PORT=; preflight_check; [[ -z "$SSH_PORT" ]]')
+        for bad in ('RESTRICT_SSH_USERS=2', 'APT_LOCK_TIMEOUT=-1'):
+            with self.subTest(bad=bad):
+                self.run_shell('check_supported_os() { :; }; BOOTSTRAP_PUBKEY=' + key +
+                               '; ' + bad + '; preflight_check', success=False)
+
+    def test_os_minimum_versions(self):
+        for os_id, version, ok in [('debian', '12', True), ('debian', '14', True),
+                                   ('debian', '11', False), ('debian', 'unknown', False),
+                                   ('ubuntu', '22.04', True), ('ubuntu', '25.10', True),
+                                   ('ubuntu', '28.04', True), ('ubuntu', '20.04', False),
+                                   ('ubuntu', '21.10', False), ('centos', '9', False)]:
+            with self.subTest(os_id=os_id, version=version):
+                self.run_shell(f'os_meets_minimum {os_id} {version}', success=ok)
+
+    def test_untested_os_warns_and_unsupported_os_stops(self):
+        r = self.run_shell('get_os_id() { echo ubuntu; }; get_os_version_id() { echo 25.10; }; '
+                           'check_supported_os')
+        self.assertIn('not in the tested list', r.stdout)
+        r = self.run_shell('get_os_id() { echo debian; }; get_os_version_id() { echo 13; }; '
+                           'check_supported_os')
+        self.assertNotIn('not in the tested list', r.stdout)
+        self.run_shell('get_os_id() { echo debian; }; get_os_version_id() { echo 11; }; '
+                       'check_supported_os', success=False)
+
+    def test_system_zshrc_original_is_backed_up_once(self):
+        etc = self.root / 'etc'
+        (etc / 'zsh').mkdir(parents=True)
+        (etc / 'zsh/zshrc').write_text('distribution default\n')
+        source = self.source.replace('/etc/zsh', str(etc / 'zsh')) \
+                            .replace('/etc/profile.d', str(etc / 'profile.d'))
+        code = 'command() { [[ "$2" == zsh ]] && return 0; builtin command "$@"; }; ' \
+               'step_configure_system_shell; rm -f "$STATE_DIR/configure_system_shell.done"; ' \
+               'step_configure_system_shell'
+        r = subprocess.run(['bash', '-c', source + '\n' + self.base + '\n' + code],
+                           text=True, capture_output=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((etc / 'zsh/zshrc.bootstrap-orig').read_text(), 'distribution default\n')
+        self.assertIn('managed by bootstrap-debian.sh', (etc / 'zsh/zshrc').read_text())
+
     def test_main_marks_completion_only_after_ssh_success(self):
         setup = '''
 require_root() { :; }; check_supported_os() { :; }

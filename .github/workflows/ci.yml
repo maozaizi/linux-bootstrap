@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-unit:
+    name: 语法、ShellCheck 与单元测试
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bash 语法检查
+        run: for f in *.sh tests/*.sh; do bash -n "$f"; done
+
+      - name: ShellCheck（error 级别阻断）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck --version
+          shellcheck -S error *.sh tests/*.sh
+
+      - name: 单元测试
+        run: |
+          sudo apt-get install -y -qq openssh-server openssh-client
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+
+  container-smoke:
+    name: 冒烟测试 ${{ matrix.image }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["debian:12", "debian:13", "ubuntu:22.04", "ubuntu:24.04", "ubuntu:26.04"]
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 只读预检与软件清单解析
+        run: SRC="$GITHUB_WORKSPACE" SMOKE_IN_CONTAINER=1 bash tests/container-smoke.sh
