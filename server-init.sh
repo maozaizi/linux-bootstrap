@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 统一调度入口；所有组件仍可直接通过 bash 单独运行。
-# Version: 1.1.1 | Updated: 2026-11-05
+# Version: 1.1.2 | Updated: 2026-11-25（整套初始化接受 Ubuntu 26.04 LTS）
 # 用法（root）：bash server-init.sh；从菜单选择一项执行，默认不修改系统。
 # 完整初始化：bash server-init.sh init；保留 IPv6 时追加 --keep-ipv6。
 # 按需安装 Docker：bash server-init.sh docker -u maozaizi。
@@ -102,8 +102,8 @@ preflight() {
   id="$(. /etc/os-release; printf '%s' "$ID")"
   version="$(. /etc/os-release; printf '%s' "$VERSION_ID")"
   case "$id:$version" in
-    ubuntu:22.04|ubuntu:24.04|debian:12|debian:13) ;;
-    *) die "仅支持 Ubuntu 22.04/24.04 和 Debian 12/13。" ;;
+    ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|debian:12|debian:13) ;;
+    *) die "仅支持 Ubuntu 22.04/24.04/26.04 和 Debian 12/13。" ;;
   esac
   for cmd in ssh-keygen systemctl flock tee awk tr sed; do
     command -v "$cmd" >/dev/null 2>&1 || die "缺少必要命令：$cmd"
@@ -279,7 +279,7 @@ main() {
   (($# == 0)) || shift
   case "$action" in
     -h|--help|help) usage ;;
-    --version|version) printf 'server-init.sh 1.1.1\n' ;;
+    --version|version) printf 'server-init.sh 1.1.2\n' ;;
     menu) [[ $# == 0 ]] || die 'menu 不接受额外参数。'; interactive_menu ;;
     init) initialize "$@" ;;
     --keep-ipv6|--defer-ssh-lockdown) initialize "$action" "$@" ;;

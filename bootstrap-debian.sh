@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bootstrap-debian.sh — Debian / Ubuntu 新服务器初始化
-# Version: 1.7.1 | Updated: 2026-11-05
-# 支持 Ubuntu 22.04 / 24.04、Debian 12 / 13，需 root 和 systemd。
+# Version: 1.7.2 | Updated: 2026-11-25
+# 支持 Ubuntu 22.04 / 24.04 / 26.04 LTS、Debian 12 / 13，需 root 和 systemd。
 # 仅安装软件：bash bootstrap-debian.sh --packages-only（清单为同目录 soft-list）。
 # 只读预检：使用同一公钥设置，追加 --check。
 # 仅启用自动校时：bash bootstrap-debian.sh --time-sync-only（无需公钥）。
@@ -14,12 +14,11 @@
 # 用户公钥及 Shell 文件降权写入；拒绝已有符号链接。
 # 完成后请在新终端验证登录，再关闭当前会话。其余配置见下方环境变量。
 
-VERSION="1.7.1"
-LAST_MODIFIED="2026-11-05"
-SUPPORTED_DISTROS="ubuntu-22.04 ubuntu-24.04 debian-12 debian-13"
+VERSION="1.7.2"
+LAST_MODIFIED="2026-11-25"
 set -Eeuo pipefail
 
-# 避免 needrestart（Ubuntu 22.04+/24.04 默认自带）在 apt 之后弹出交互提示导致脚本卡住
+# 避免 needrestart 在 apt 之后弹出交互提示导致脚本卡住
 export NEEDRESTART_MODE=a
 
 # =========================
@@ -156,11 +155,11 @@ check_supported_os() {
   os_ver="$(get_os_version_id)"
 
   case "$os_id:$os_ver" in
-    ubuntu:22.04|ubuntu:24.04|debian:12|debian:13)
+    ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|debian:12|debian:13)
       log "Supported OS detected: ${os_id} ${os_ver}"
       ;;
     *)
-      die "Unsupported OS: ${os_id} ${os_ver}. Supported targets: Ubuntu 22.04, Ubuntu 24.04, Debian 12, Debian 13."
+      die "Unsupported OS: ${os_id} ${os_ver}. Supported targets: Ubuntu 22.04, Ubuntu 24.04, Ubuntu 26.04, Debian 12, Debian 13."
       ;;
   esac
 }

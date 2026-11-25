@@ -66,8 +66,8 @@ SOFT_LIST_FILE=/root/custom-soft-list bash bootstrap-debian.sh --packages-only
 已有安装完成标记不会跳过这项操作。apt 仍可能更新清单中已安装的软件包。
 单独运行 Bootstrap 时，请同时保留 `soft-list`，或通过 `SOFT_LIST_FILE` 指定文件。
 
-Debian 13 中，`dnsutils` 由 `bind9-dnsutils` 提供，`libncursesw5-dev` 由 `libncurses-dev` 提供。
-这是发行版的包提供关系，清单保留原名称；对应软件已安装时，不应仅按旧包名判断为漏装。
+清单使用 `libncurses-dev` 安装 ncurses 开发头文件，兼容 Ubuntu 26.04 及其他支持版本。
+在 Debian 13 和 Ubuntu 26.04 中，APT 通过 `bind9-dnsutils` 安装清单中的 `dnsutils`。
 
 ## 自动校时与 Shell 生效
 
@@ -134,7 +134,7 @@ UFW 重建前备份配置和原启用状态，失败时尝试恢复；完整备�
 已有 Swap 和防火墙规则不会自动替换。若暂缓 SSH 收口，程序会明确提示，该步骤仍需日后完成。
 最终结果分别列出 SSH 收口和时间同步状态；“基础初始化完成”不代表所有待办都已完成。
 
-支持 Ubuntu 22.04/24.04、Debian 12/13，要求 root、Bash 4+、systemd 和交互终端。
+支持 Ubuntu 22.04/24.04/26.04 LTS、Debian 12/13，要求 root、Bash 4+、systemd 和交互终端。
 关闭密码认证前的真实登录验证不能用本机静态检查代替。
 
 ## 隐私
