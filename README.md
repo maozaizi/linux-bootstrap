@@ -47,7 +47,7 @@ BOOTSTRAP_PUBKEY="ssh-ed25519 完整公钥内容" bash server-init.sh init
 ## 软件包清单
 
 基础软件包统一维护在同目录的 `soft-list`：每行一个包名，支持空行、`#` 注释和行尾注释。
-基础工具按清单交给 apt，依赖和虚拟包由 apt 自行处理；自动校时服务另按下节按需补齐。
+基础工具按清单交给 apt，依赖由 apt 自行处理；自动校时服务另按下节按需补齐。
 清单缺失、为空或包名格式错误时，在系统变更前停止。清单作为数据读取，不执行其中内容。
 清单拒绝 `sudo-` 等卸载操作符，安装命令使用 `--no-remove` 阻止删除软件包；包是否可用由 apt 校验。
 
@@ -68,6 +68,8 @@ SOFT_LIST_FILE=/root/custom-soft-list bash bootstrap-debian.sh --packages-only
 
 清单使用 `libncurses-dev` 安装 ncurses 开发头文件，兼容 Ubuntu 26.04 及其他支持版本。
 在 Debian 13 和 Ubuntu 26.04 中，APT 通过 `bind9-dnsutils` 安装清单中的 `dnsutils`。
+清单中的 `ping` 优先保留已安装的 `inetutils-ping`，其余情况下使用 `iputils-ping`。
+自定义清单若需指定实现，可以填写具体包名。
 
 ## 自动校时与 Shell 生效
 

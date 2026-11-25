@@ -80,6 +80,30 @@ apt() {{ printf '%s\\n' "$@" >> {shlex.quote(str(self.calls))}; }}
         self.assertEqual(self.calls.read_text().splitlines(),
                          ['update', 'install', '--no-remove', '-y', 'g++', 'libstdc++6'])
 
+    def test_ping_keeps_installed_provider_and_defaults_to_iputils(self):
+        for status, expected in [('installed', 'inetutils-ping'),
+                                 ('config-files', 'iputils-ping'),
+                                 ('', 'iputils-ping')]:
+            with self.subTest(status=status):
+                self.manifest.write_text('ping\ncurl\n')
+                self.calls.write_text('')
+                self.run_shell(f'''
+dpkg-query() {{
+    [[ "$*" == '-W -f=${{db:Status-Status}} inetutils-ping' ]] || return 2
+    [[ -n {shlex.quote(status)} ]] || return 1
+    printf '%s' {shlex.quote(status)}
+}}
+main --packages-only
+''')
+                self.assertEqual(self.calls.read_text().splitlines(),
+                                 ['update', 'install', '--no-remove', '-y', expected, 'curl'])
+
+    def test_explicit_ping_package_is_passed_through(self):
+        self.manifest.write_text('iputils-ping\n')
+        self.run_shell('dpkg-query() { printf installed; }; main --packages-only')
+        self.assertEqual(self.calls.read_text().splitlines(),
+                         ['update', 'install', '--no-remove', '-y', 'iputils-ping'])
+
     def test_default_list_resolves_from_script_location(self):
         r = subprocess.run(['bash', str(ROOT / 'bootstrap-debian.sh'), '--help'],
                            cwd=self.root, capture_output=True, text=True)

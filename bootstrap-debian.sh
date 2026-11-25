@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # bootstrap-debian.sh — Debian / Ubuntu 新服务器初始化
-# Version: 1.7.2 | Updated: 2026-11-25
+# Version: 1.7.3 | Updated: 2026-11-25
 # 支持 Ubuntu 22.04 / 24.04 / 26.04 LTS、Debian 12 / 13，需 root 和 systemd。
 # 仅安装软件：bash bootstrap-debian.sh --packages-only（清单为同目录 soft-list）。
 # 只读预检：使用同一公钥设置，追加 --check。
 # 仅启用自动校时：bash bootstrap-debian.sh --time-sync-only（无需公钥）。
+# 清单中的 ping 沿用已安装的 inetutils-ping，否则使用 iputils-ping。
 #
 # 用法：BOOTSTRAP_PUBKEY_FILE=/root/id_ed25519.pub bash bootstrap-debian.sh
 # 也可通过 BOOTSTRAP_PUBKEY 传入单行公钥；需要密码时会在系统变更前交互确认。
@@ -14,7 +15,7 @@
 # 用户公钥及 Shell 文件降权写入；拒绝已有符号链接。
 # 完成后请在新终端验证登录，再关闭当前会话。其余配置见下方环境变量。
 
-VERSION="1.7.2"
+VERSION="1.7.3"
 LAST_MODIFIED="2026-11-25"
 set -Eeuo pipefail
 
@@ -350,13 +351,26 @@ step_ensure_sudo() {
 }
 
 step_install_pkgs() {
-  local step="install_pkgs"
+  local step="install_pkgs" package
+  local packages=()
   # 不按旧标记跳过，确保清单改动可以生效。
   (( ${#CORE_PKGS[@]} > 0 )) || die "Package list was not loaded."
 
+  for package in "${CORE_PKGS[@]}"; do
+    # 两个实现不能共存；解析虚拟包时保留已有实现，避免触发 APT 卸载。
+    if [[ "$package" == ping ]]; then
+      if [[ "$(dpkg-query -W -f='${db:Status-Status}' inetutils-ping 2>/dev/null)" == installed ]]; then
+        package=inetutils-ping
+      else
+        package=iputils-ping
+      fi
+    fi
+    packages+=("$package")
+  done
+
   export DEBIAN_FRONTEND=noninteractive
 
-  apt install --no-remove -y "${CORE_PKGS[@]}"
+  apt install --no-remove -y "${packages[@]}"
   mark_done "$step"
   log "Packages installed"
 }
