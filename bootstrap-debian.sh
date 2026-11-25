@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bootstrap-debian.sh — Debian / Ubuntu 新服务器初始化
-# Version: 1.7.3 | Updated: 2026-11-25
-# 支持 Ubuntu 22.04 / 24.04 / 26.04 LTS、Debian 12 / 13，需 root 和 systemd。
+# Version: 1.8.0 | Updated: 2026-11-25（apt 等锁与保留配置；SSH 默认保留端口、不写 AllowUsers）
+# 已验证 Ubuntu 22.04 / 24.04 / 26.04 LTS、Debian 12 / 13；更高版本警告后继续。需 root 和 systemd。
 # 仅安装软件：bash bootstrap-debian.sh --packages-only（清单为同目录 soft-list）。
 # 只读预检：使用同一公钥设置，追加 --check。
 # 仅启用自动校时：bash bootstrap-debian.sh --time-sync-only（无需公钥）。
@@ -11,11 +11,13 @@
 # 也可通过 BOOTSTRAP_PUBKEY 传入单行公钥；需要密码时会在系统变更前交互确认。
 # 默认创建 maozaizi（zsh + sudo），禁用普通用户 SSH 密码认证，保留 root 密码兜底。
 # SSH 策略使用 10-bootstrap.conf（早于常见的 50-cloud-init.conf），自动迁移旧 99 文件。
+# 未设置 SSH_PORT 时保留当前端口；RESTRICT_SSH_USERS=1 才写入 AllowUsers。
+# apt 最多等待 APT_LOCK_TIMEOUT 秒（默认 300）的 dpkg 锁，升级时保留已有配置文件。
 # FORCE_RUN=1 绕过总完成标记；用户、公钥、软件包和 SSH 会重新检查。
 # 用户公钥及 Shell 文件降权写入；拒绝已有符号链接。
 # 完成后请在新终端验证登录，再关闭当前会话。其余配置见下方环境变量。
 
-VERSION="1.7.3"
+VERSION="1.8.0"
 LAST_MODIFIED="2026-11-25"
 set -Eeuo pipefail
 
@@ -34,12 +36,17 @@ HARDEN_SSH="${HARDEN_SSH:-1}"          # 1=写入 sshd_config.d 加固配置并�
 DISABLE_SSH_PASSWORD="${DISABLE_SSH_PASSWORD:-1}"  # 1=禁用 SSH 密码登录（建议与公钥登录配套）
 DISABLE_ROOT_SSH="${DISABLE_ROOT_SSH:-0}"          # 1=禁用 root SSH 登录（推荐）
 DISABLE_ROOT_SSH_PASSWORD="${DISABLE_ROOT_SSH_PASSWORD:-0}" # 1=禁用 root 的 SSH 密码登录（默认不禁用，作为兜底）
-SSH_PORT="${SSH_PORT:-22}"            # 若你改过 SSH 端口，可在环境变量覆盖
+SSH_PORT="${SSH_PORT:-}"              # 留空=保留当前端口；设置后写入 Port 并同步 ssh.socket
+RESTRICT_SSH_USERS="${RESTRICT_SSH_USERS:-0}"  # 1=写入 AllowUsers，仅允许运维用户（及 root）登录 SSH
 
 # Shell 体验（root 也统一）
 CONFIGURE_SYSTEM_ZSHRC="${CONFIGURE_SYSTEM_ZSHRC:-1}"   # 1=写入 /etc/zsh/zshrc（所有用户生效）
 SET_ROOT_SHELL_ZSH="${SET_ROOT_SHELL_ZSH:-0}"           # 1=将 root 的登录 shell 切换为 zsh（谨慎开启）
 ROOT_SHELL="${ROOT_SHELL:-/usr/bin/zsh}"
+
+# 新机 cloud-init / unattended-upgrades 常占用 dpkg 锁，apt 等待而不是立即失败。
+APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-300}"
+APT_UPDATED=0
 
 # 允许重新执行（用于变更公钥/修复配置）
 FORCE_RUN="${FORCE_RUN:-0}"           # 1=忽略 DONE_FILE 并继续执行
@@ -102,6 +109,26 @@ require_root() {
   [[ ${EUID:-0} -eq 0 ]] || die "Please run as root."
 }
 
+# 统一 apt 调用：稳定 CLI、等待 dpkg 锁、不弹配置文件冲突提示（保留现有配置）。
+apt_get() {
+  DEBIAN_FRONTEND=noninteractive apt-get \
+    -o "DPkg::Lock::Timeout=${APT_LOCK_TIMEOUT}" \
+    -o Dpkg::Options::=--force-confdef \
+    -o Dpkg::Options::=--force-confold \
+    "$@"
+}
+
+# 每次运行至少刷新一次软件源，避免重跑时使用过期列表。
+apt_update_once() {
+  (( APT_UPDATED == 1 )) && return 0
+  apt_get update
+  APT_UPDATED=1
+}
+
+validate_apt_lock_timeout() {
+  [[ "$APT_LOCK_TIMEOUT" =~ ^[0-9]{1,5}$ ]] || die "APT_LOCK_TIMEOUT must be an integer number of seconds."
+}
+
 ensure_sudo_installed() {
   command -v sudo >/dev/null 2>&1 || die "sudo is required; include it in $SOFT_LIST_FILE."
 }
@@ -160,9 +187,26 @@ check_supported_os() {
       log "Supported OS detected: ${os_id} ${os_ver}"
       ;;
     *)
-      die "Unsupported OS: ${os_id} ${os_ver}. Supported targets: Ubuntu 22.04, Ubuntu 24.04, Ubuntu 26.04, Debian 12, Debian 13."
+      os_meets_minimum "$os_id" "$os_ver" \
+        || die "Unsupported OS: ${os_id} ${os_ver}. Requires Debian 12+ or Ubuntu 22.04+."
+      warn "${os_id} ${os_ver} is not in the tested list (Ubuntu 22.04/24.04/26.04, Debian 12/13); continuing."
       ;;
   esac
+}
+
+# 版本号按数字逐段比较：Debian >= 12、Ubuntu >= 22.04。
+os_meets_minimum() {
+  local id="$1" version="$2" minimum major minor min_major min_minor
+  case "$id" in
+    debian) minimum=12 ;;
+    ubuntu) minimum=22.04 ;;
+    *) return 1 ;;
+  esac
+  [[ "$version" =~ ^([0-9]+)(\.([0-9]+))?$ ]] || return 1
+  major=$((10#${BASH_REMATCH[1]})); minor=$((10#${BASH_REMATCH[3]:-0}))
+  min_major=$((10#${minimum%%.*})); min_minor=0
+  [[ "$minimum" != *.* ]] || min_minor=$((10#${minimum#*.}))
+  (( major > min_major || (major == min_major && minor >= min_minor) ))
 }
 
 get_sshd_bin() {
@@ -239,15 +283,18 @@ preflight_check() {
   VALIDATED_PUBKEY="$(get_pubkey)" || die "Preflight failed: invalid SSH public key. No changes were made."
   [[ "$BOOTSTRAP_USER" =~ ^[a-z_][a-z0-9_-]*[$]?$ && "$BOOTSTRAP_USER" != root ]] \
     || die "BOOTSTRAP_USER must be a non-root login name."
-  [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] || die "SSH_PORT must be between 1 and 65535."
-  SSH_PORT=$((10#$SSH_PORT))
-  (( SSH_PORT >= 1 && SSH_PORT <= 65535 )) || die "SSH_PORT must be between 1 and 65535."
+  if [[ -n "$SSH_PORT" ]]; then
+    [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] || die "SSH_PORT must be between 1 and 65535."
+    SSH_PORT=$((10#$SSH_PORT))
+    (( SSH_PORT >= 1 && SSH_PORT <= 65535 )) || die "SSH_PORT must be between 1 and 65535."
+  fi
+  validate_apt_lock_timeout
   local option
   for option in HARDEN_SSH DISABLE_SSH_PASSWORD DISABLE_ROOT_SSH DISABLE_ROOT_SSH_PASSWORD \
-                CONFIGURE_SYSTEM_ZSHRC SET_ROOT_SHELL_ZSH FORCE_RUN; do
+                RESTRICT_SSH_USERS CONFIGURE_SYSTEM_ZSHRC SET_ROOT_SHELL_ZSH FORCE_RUN; do
     [[ "${!option}" == 0 || "${!option}" == 1 ]] || die "$option must be 0 or 1."
   done
-  info "Preflight: user=$BOOTSTRAP_USER, shell=$BOOTSTRAP_SHELL, SSH port=$SSH_PORT"
+  info "Preflight: user=$BOOTSTRAP_USER, shell=$BOOTSTRAP_SHELL, SSH port=${SSH_PORT:-unchanged}"
 
   local arch
   arch="$(dpkg --print-architecture 2>/dev/null || uname -m)"
@@ -267,9 +314,9 @@ step_apt_upgrade() {
   local step="apt_upgrade"
   step_done "$step" && { log "Skip: apt upgrade already done"; return; }
 
-  export DEBIAN_FRONTEND=noninteractive
-  apt update
-  apt upgrade -y
+  apt_update_once
+  # --with-new-pkgs 与 apt upgrade 行为一致：允许安装新依赖，但不删除软件包。
+  apt_get upgrade -y --with-new-pkgs
   mark_done "$step"
   log "Apt upgrade done"
 }
@@ -278,9 +325,9 @@ step_apt_cleanup() {
   local step="apt_cleanup"
   step_done "$step" && { log "Skip: apt cleanup already done"; return; }
 
-  apt autoremove --purge -y
-  apt clean
-  apt autoclean
+  apt_get autoremove --purge -y
+  apt_get clean
+  apt_get autoclean
   mark_done "$step"
   log "Apt cleanup done"
 }
@@ -319,9 +366,8 @@ step_time_sync() {
         ;;
       no)
         info "未发现可用校时服务，安装 systemd-timesyncd。"
-        export DEBIAN_FRONTEND=noninteractive
-        apt update
-        apt install --no-remove -y systemd-timesyncd
+        apt_update_once
+        apt_get install --no-remove -y systemd-timesyncd
         systemctl daemon-reload
         # 直接启动新安装的服务，不依赖 timedated 已缓存的服务列表。
         systemctl enable --now systemd-timesyncd.service || die "启用 systemd-timesyncd 失败。"
@@ -368,9 +414,9 @@ step_install_pkgs() {
     packages+=("$package")
   done
 
-  export DEBIAN_FRONTEND=noninteractive
-
-  apt install --no-remove -y "${packages[@]}"
+  # 不依赖升级步骤的旧标记；每次安装前刷新软件源。
+  apt_update_once
+  apt_get install --no-remove -y "${packages[@]}"
   mark_done "$step"
   log "Packages installed"
 }
@@ -533,6 +579,12 @@ step_configure_system_shell() {
   info "Configuring /etc/zsh/zshrc for prompt, colors, completion and common aliases (ll/la/l)."
 
   install -d -m 755 /etc/zsh
+  # 首次接管前保留发行版原文件，便于对比或恢复。
+  if [[ -f /etc/zsh/zshrc && ! -e /etc/zsh/zshrc.bootstrap-orig ]] \
+      && ! grep -q 'managed by bootstrap-debian.sh' /etc/zsh/zshrc; then
+    cp -p /etc/zsh/zshrc /etc/zsh/zshrc.bootstrap-orig
+    info "Original /etc/zsh/zshrc saved as /etc/zsh/zshrc.bootstrap-orig"
+  fi
   cat >/etc/zsh/zshrc <<'EOF'
 # /etc/zsh/zshrc - system-wide zsh config (managed by bootstrap-debian.sh)
 
@@ -653,6 +705,22 @@ verify_ssh_policy() {
   done
 }
 
+# sshd 最终生效的监听端口（排序去重，每行一个）。
+effective_ssh_ports() {
+  local config
+  config="$("$1" -T)" || return 1
+  awk '$1 == "port" {print $2}' <<< "$config" | sort -nu
+}
+
+# 读取本脚本旧版 drop-in 中的 Port 行。
+managed_ports() {
+  local file
+  for file in "$@"; do
+    [[ -f "$file" ]] || continue
+    awk '!/^[[:space:]]*#/ && tolower($1) == "port" && $2 ~ /^[0-9]+$/ {print "Port " $2}' "$file"
+  done | sort -u
+}
+
 # 在子 shell 内管理回滚，避免影响主流程的 trap。
 step_harden_ssh() (
   [[ "$HARDEN_SSH" == 1 ]] || { warn "SSH hardening disabled (HARDEN_SSH=0)"; return; }
@@ -664,6 +732,7 @@ step_harden_ssh() (
   legacy_file="$dropin_dir/99-bootstrap.conf"
   install -d -m 755 /run/sshd "$dropin_dir"
   "$sshd_bin" -t || die "Existing SSH configuration is invalid; no SSH configuration was changed."
+  ports_before="$(effective_ssh_ports "$sshd_bin")" || die "Unable to read current SSH ports."
   workdir="$(mktemp -d "$dropin_dir/.bootstrap.XXXXXX")"
 
   cleanup_ssh_change() {
@@ -717,7 +786,12 @@ step_harden_ssh() (
   # 生成独立配置，避免修改主配置文件。
   {
     echo "# Managed by bootstrap-debian.sh"
-    echo "Port ${SSH_PORT}"
+    if [[ -n "$SSH_PORT" ]]; then
+      echo "Port ${SSH_PORT}"
+    else
+      # 未指定端口：沿用本脚本旧文件中的 Port，其他端口配置不受影响。
+      managed_ports "$workdir/original" "$workdir/legacy"
+    fi
     echo "PubkeyAuthentication yes"
 
     # Password auth policy (global)
@@ -740,11 +814,13 @@ step_harden_ssh() (
       fi
     fi
 
-    # AllowUsers: by default allow both the bootstrap user and root (fallback)
-    if [[ "$DISABLE_ROOT_SSH" == "1" ]]; then
-      echo "AllowUsers ${BOOTSTRAP_USER}"
-    else
-      echo "AllowUsers ${BOOTSTRAP_USER} root"
+    # AllowUsers 会挡住服务商默认用户等其他账户，仅在明确要求时写入。
+    if [[ "$RESTRICT_SSH_USERS" == "1" ]]; then
+      if [[ "$DISABLE_ROOT_SSH" == "1" ]]; then
+        echo "AllowUsers ${BOOTSTRAP_USER}"
+      else
+        echo "AllowUsers ${BOOTSTRAP_USER} root"
+      fi
     fi
 
     # 为 root 单独保留密码兜底。
@@ -762,9 +838,15 @@ step_harden_ssh() (
   rm -f "$legacy_file"
   "$sshd_bin" -t || die "New SSH configuration is invalid."
   verify_ssh_policy "$sshd_bin" || die "SSH policy is overridden by other configuration."
+  if [[ -z "$SSH_PORT" ]]; then
+    [[ "$(effective_ssh_ports "$sshd_bin")" == "$ports_before" ]] \
+      || die "SSH listening ports would change; set SSH_PORT explicitly to change them."
+  fi
 
   runtime_touched=1
-  sync_ssh_socket_port || die "Unable to update ssh.socket."
+  if [[ -n "$SSH_PORT" ]]; then
+    sync_ssh_socket_port || die "Unable to update ssh.socket."
+  fi
   reload_ssh_service || die "Unable to reload/restart SSH service."
   mark_done harden_ssh
   committed=1
@@ -789,9 +871,8 @@ main() {
       require_root
       check_supported_os
       load_package_list
+      validate_apt_lock_timeout
       ensure_state_dir
-      export DEBIAN_FRONTEND=noninteractive
-      apt update
       step_install_pkgs
       return 0
       ;;
@@ -799,6 +880,7 @@ main() {
       [[ $# == 1 ]] || die "--time-sync-only takes no arguments."
       require_root
       check_supported_os
+      validate_apt_lock_timeout
       step_time_sync
       return 0
       ;;

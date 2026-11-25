@@ -21,7 +21,7 @@ CALLS={shlex.quote(str(self.calls))}
 ENABLED={shlex.quote(str(self.enabled))}
 require_root() {{ :; }}
 check_supported_os() {{ :; }}
-apt() {{
+apt_get() {{
   echo "apt $*" >> "$CALLS"
   [[ "${{FAIL_APT:-0}}" == 0 ]]
 }}

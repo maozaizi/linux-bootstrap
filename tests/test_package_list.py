@@ -24,7 +24,7 @@ DONE_FILE="$STATE_DIR/done"
 require_root() {{ :; }}
 check_supported_os() {{ :; }}
 log() {{ :; }}
-apt() {{ printf '%s\\n' "$@" >> {shlex.quote(str(self.calls))}; }}
+apt_get() {{ printf '%s\\n' "$@" >> {shlex.quote(str(self.calls))}; }}
 '''
 
     def run_shell(self, code, success=True):
@@ -103,6 +103,38 @@ main --packages-only
         self.run_shell('dpkg-query() { printf installed; }; main --packages-only')
         self.assertEqual(self.calls.read_text().splitlines(),
                          ['update', 'install', '--no-remove', '-y', 'iputils-ping'])
+
+    def test_install_refreshes_sources_even_when_upgrade_marker_exists(self):
+        self.state.mkdir()
+        (self.state / 'apt_upgrade.done').touch()
+        self.manifest.write_text('curl\n')
+        self.run_shell('load_package_list; step_apt_upgrade; step_install_pkgs')
+        self.assertEqual(self.calls.read_text().splitlines(),
+                         ['update', 'install', '--no-remove', '-y', 'curl'])
+
+    def test_sources_are_refreshed_once_per_run(self):
+        self.state.mkdir()
+        self.manifest.write_text('curl\n')
+        self.run_shell('load_package_list; step_apt_upgrade; step_install_pkgs')
+        self.assertEqual(self.calls.read_text().splitlines(),
+                         ['update', 'upgrade', '-y', '--with-new-pkgs',
+                          'install', '--no-remove', '-y', 'curl'])
+
+    def test_apt_waits_for_lock_and_keeps_existing_config_files(self):
+        script = shlex.quote(str(ROOT / 'bootstrap-debian.sh'))
+        r = self.run_shell('apt-get() { printf "%s\\n" "$DEBIAN_FRONTEND" "$@"; }; '
+                           'eval "$(sed -n \'/^apt_get() {/,/^}/p\' ' + script + ')"; '
+                           'APT_LOCK_TIMEOUT=42; apt_get install -y curl')
+        self.assertEqual(r.stdout.splitlines(),
+                         ['noninteractive', '-o', 'DPkg::Lock::Timeout=42',
+                          '-o', 'Dpkg::Options::=--force-confdef',
+                          '-o', 'Dpkg::Options::=--force-confold', 'install', '-y', 'curl'])
+
+    def test_invalid_lock_timeout_stops_before_apt(self):
+        self.manifest.write_text('curl\n')
+        self.run_shell('APT_LOCK_TIMEOUT=abc; main --packages-only', success=False)
+        self.assertFalse(self.calls.exists())
+        self.assertFalse(self.state.exists())
 
     def test_default_list_resolves_from_script_location(self):
         r = subprocess.run(['bash', str(ROOT / 'bootstrap-debian.sh'), '--help'],
